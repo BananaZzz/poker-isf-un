@@ -1,9 +1,12 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Ensure a Linux engine is bundled for Render's runtime (Ubuntu, OpenSSL 3.x).
+  // "native" covers local dev; the second target is what Render's Node image needs.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

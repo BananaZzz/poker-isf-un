@@ -1,0 +1,35 @@
+# Render Blueprint for Golden Room Poker
+# https://render.com/docs/blueprint-spec
+#
+# Free plan usage:
+#   - `plan: free` gives one always-available web service with 512 MB RAM.
+#   - The instance sleeps after ~15 minutes of inactivity; the next request
+#     takes ~30 seconds to wake it. Users may see one slow initial load.
+#   - Uploaded avatars land in /public/uploads on the container's ephemeral
+#     filesystem and disappear whenever Render redeploys. Prefer the built-in
+#     casino avatars for a first public MVP.
+#
+# Database:
+#   This blueprint intentionally does NOT provision the database. Use Neon's
+#   free tier and paste the connection string into the DATABASE_URL env var
+#   below (Render → Environment). See README "Free Public Deployment".
+services:
+  - type: web
+    name: golden-room-poker
+    runtime: node
+    plan: free
+    region: frankfurt        # change if you want a different region
+    branch: claude/texas-holdem-poker-platform-nj4y14
+    autoDeploy: true
+    healthCheckPath: /api/health
+    buildCommand: npm ci && npm run build
+    startCommand: npx prisma db push --accept-data-loss --skip-generate && npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20.11.1"
+      - key: SESSION_SECRET
+        generateValue: true   # Render generates a strong random value on first deploy
+      - key: DATABASE_URL
+        sync: false           # paste your Neon pooled connection string here after first deploy
