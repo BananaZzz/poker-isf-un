@@ -80,3 +80,18 @@ html, body {
 .banner-in { animation: bannerIn 260ms ease-out both; }
 
 .chip-glow { box-shadow: 0 0 22px rgba(212,175,81,.35); }
+
+/* Mobile helpers */
+@media (max-width: 640px) {
+  .card-panel { padding: 1rem; border-radius: 0.75rem; }
+  .btn { min-height: 44px; }
+  input, select, textarea { font-size: 16px; }  /* prevents iOS zoom-on-focus */
+}
+
+/* Responsive table → card list utility used on the dashboard.
+   Hidden by default on desktop; on small screens the wrapping table hides and
+   the card list is shown by the caller via responsive Tailwind classes. */
+.stack-card {
+  @apply rounded-lg border border-ink-700 bg-ink-800/40 p-3 flex flex-col gap-1 text-sm;
+}
+.stack-card-row { @apply flex justify-between items-center; }

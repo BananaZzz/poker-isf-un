@@ -5,6 +5,7 @@ import { getSessionUser } from '@/lib/auth';
 import { AvatarBadge } from '@/components/AvatarPicker';
 import { formatCurrency } from '@/lib/money';
 import { ProfilePanel } from '@/components/ProfilePanel';
+import { MarkSettledButton } from '@/components/SettlementActions';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,6 +68,25 @@ export default async function Dashboard() {
     .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
     .slice(0, 8);
 
+  // Open balances (settlement bookkeeping) — distinct from pairwise pot
+  // attribution above. This tracks who ought to hand cash to whom based on
+  // each session's final net result.
+  const [owedByMe, owedToMe] = await Promise.all([
+    prisma.settlementObligation.findMany({
+      where: { debtorUserId: user.id },
+      include: { creditor: true, session: true },
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+    }),
+    prisma.settlementObligation.findMany({
+      where: { creditorUserId: user.id },
+      include: { debtor: true, session: true },
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+    }),
+  ]);
+  const totalIOweOpen = owedByMe.filter((o) => o.status === 'OPEN').reduce((s, o) => s + o.amountCents, 0);
+  const totalOwedToMeOpen = owedToMe.filter((o) => o.status === 'OPEN').reduce((s, o) => s + o.amountCents, 0);
+  const netOpen = totalOwedToMeOpen - totalIOweOpen;
+
   return (
     <div className="grid gap-6 md:grid-cols-3">
       <div className="md:col-span-2 grid gap-6">
@@ -112,7 +132,7 @@ export default async function Dashboard() {
           {myParticipations.length === 0 ? (
             <p className="text-ink-500">No completed games yet.</p>
           ) : (
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto -mx-2"><table className="w-full text-sm min-w-[400px]">
               <thead>
                 <tr className="text-ink-500">
                   <th className="text-left py-2">Date</th>
@@ -137,8 +157,98 @@ export default async function Dashboard() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
+        </div>
+
+        <div className="card-panel">
+          <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4">
+            <h2 className="text-xl font-display brass-text">Open balances</h2>
+            <div className="text-xs text-ink-500">
+              <span className="text-red-400">−{formatCurrency(totalIOweOpen)}</span>
+              {' · '}
+              <span className="text-green-400">+{formatCurrency(totalOwedToMeOpen)}</span>
+              {' · net '}
+              <span className={netOpen >= 0 ? 'text-green-400' : 'text-red-400'}>
+                {formatCurrency(netOpen, { showSign: true })}
+              </span>
+            </div>
+          </div>
+          <p className="text-[10px] text-ink-500 mb-3">
+            Bookkeeping only — the app never moves money. Distinct from pot attribution above.
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <h3 className="text-sm text-white/80 mb-2">You owe</h3>
+              {owedByMe.length === 0 ? (
+                <p className="text-ink-500 text-xs">Nothing outstanding.</p>
+              ) : (
+                <div className="grid gap-2">
+                  {owedByMe.map((o) => (
+                    <div key={o.id} className="stack-card">
+                      <div className="stack-card-row">
+                        <div>
+                          <div className="font-semibold">{o.creditor.username}</div>
+                          <div className="text-[10px] text-ink-500">
+                            {o.session.name} · {new Date(o.session.startedAt).toLocaleDateString()}
+                          </div>
+                        </div>
+                        <div className={`text-right font-mono ${o.status === 'OPEN' ? 'text-red-400' : 'text-ink-500 line-through'}`}>
+                          {formatCurrency(o.amountCents)}
+                        </div>
+                      </div>
+                      <div className="stack-card-row">
+                        <span className={`text-[10px] uppercase tracking-widest ${o.status === 'OPEN' ? 'text-brass-400' : 'text-ink-500'}`}>
+                          {o.status}
+                        </span>
+                        <MarkSettledButton
+                          obligationId={o.id}
+                          amountCents={o.amountCents}
+                          counterparty={o.creditor.username}
+                          currentStatus={o.status as 'OPEN' | 'SETTLED'}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <h3 className="text-sm text-white/80 mb-2">Owed to you</h3>
+              {owedToMe.length === 0 ? (
+                <p className="text-ink-500 text-xs">Nothing outstanding.</p>
+              ) : (
+                <div className="grid gap-2">
+                  {owedToMe.map((o) => (
+                    <div key={o.id} className="stack-card">
+                      <div className="stack-card-row">
+                        <div>
+                          <div className="font-semibold">{o.debtor.username}</div>
+                          <div className="text-[10px] text-ink-500">
+                            {o.session.name} · {new Date(o.session.startedAt).toLocaleDateString()}
+                          </div>
+                        </div>
+                        <div className={`text-right font-mono ${o.status === 'OPEN' ? 'text-green-400' : 'text-ink-500 line-through'}`}>
+                          {formatCurrency(o.amountCents)}
+                        </div>
+                      </div>
+                      <div className="stack-card-row">
+                        <span className={`text-[10px] uppercase tracking-widest ${o.status === 'OPEN' ? 'text-brass-400' : 'text-ink-500'}`}>
+                          {o.status}
+                        </span>
+                        <MarkSettledButton
+                          obligationId={o.id}
+                          amountCents={o.amountCents}
+                          counterparty={o.debtor.username}
+                          currentStatus={o.status as 'OPEN' | 'SETTLED'}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="card-panel">
@@ -146,7 +256,7 @@ export default async function Dashboard() {
           {opponents.length === 0 ? (
             <p className="text-ink-500">Play a game to build your opponent stats.</p>
           ) : (
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto -mx-2"><table className="w-full text-sm min-w-[400px]">
               <thead>
                 <tr className="text-ink-500">
                   <th className="text-left py-2">Opponent</th>
@@ -165,7 +275,7 @@ export default async function Dashboard() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
           <p className="text-[10px] text-ink-500 mt-2">
             Net vs opponent is computed from actual pot flows (each hand's contributions →
@@ -179,6 +289,7 @@ export default async function Dashboard() {
           user={{
             id: user.id, username: user.username, avatar: user.avatar,
             avatarUrl: user.avatarUrl,
+            avatarUpdatedAt: user.avatarUpdatedAt ? user.avatarUpdatedAt.toISOString() : null,
           }}
         />
 

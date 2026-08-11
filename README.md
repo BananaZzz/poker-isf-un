@@ -223,6 +223,56 @@ at or above €1, with a monotonic-increase guard.
 - **Leave table** finalizes only that participant; the host can **End game**
   to finalize everyone and close the session.
 
+## Open balances (settlement bookkeeping)
+
+At the end of a **cash** session the app runs a deterministic settlement
+matcher and stores one `SettlementObligation` row per debtor→creditor pair.
+Algorithm (greedy largest-first):
+
+```
+creditors = players with netResult > 0   (sorted desc by amount, tie-break asc userId)
+debtors   = players with netResult < 0   (sorted desc by |amount|, tie-break asc userId)
+while both non-empty:
+   amt = min(|top debtor|, top creditor)
+   emit (top debtor → top creditor : amt)
+   reduce both
+```
+
+Properties (see `tests/settlement.test.ts`):
+
+- Σ obligations from a debtor == |their net loss|
+- Σ obligations to a creditor == their net gain
+- Σ over all obligations == total positive session result
+- No self-obligations, no non-positive amounts, integer cents only
+- Same input → same output on every run (deterministic)
+
+Storage: `SettlementObligation` unique index on `(gameSessionId, debtor, creditor)`
+plus a `GameSession.settlementDone` flag make finalization **idempotent** —
+duplicate End-Game clicks, reconnect races, or replayed timers cannot
+produce duplicate rows.
+
+Authorization on `POST /api/settlements/[id]/settle`: either the debtor OR
+the creditor may mark an obligation as SETTLED (a private group's private
+bookkeeping; either side can announce "I paid" or "I got paid"). `DELETE`
+un-settles.
+
+**Distinct from `HandTransfer` (pairwise pot attribution).** Pot attribution
+tracks who won chips from whom during hands, live during play. Settlement
+obligations describe who ought to hand over cash after a session ends, based
+on the finalized net result including rebuys. Do not mix.
+
+## Uploaded avatars — Postgres-backed
+
+Uploaded profile images are stored in Postgres (`User.avatarData` BYTEA,
+`avatarMime` TEXT, `avatarUpdatedAt` TIMESTAMP). No filesystem, no external
+image host. The client resizes to a 512×512 WebP with a canvas before
+uploading, keeping the payload and the stored blob small (~30–150 KB).
+
+Fallback chain when rendering an avatar:
+1. `/api/users/[id]/avatar?v=<avatarUpdatedAt>` (uploaded WebP; cache-busted)
+2. `User.avatarUrl` (Phase-2 legacy filesystem URL — probably 404 on Render)
+3. One of the 12 standard casino glyphs
+
 ## Free Public Deployment — Render + Neon
 
 This section is a full click-by-click guide to putting the app on the public
@@ -285,7 +335,7 @@ git push -u origin claude/texas-holdem-poker-platform-nj4y14
    - **Plan:** `free`
    - **Region:** `frankfurt` (change here if you want)
    - **Build command:** `npm ci --include=dev && npm run build`
-   - **Start command:** `npx prisma db push --accept-data-loss --skip-generate && npm run start`
+   - **Start command:** `npx prisma db push --skip-generate && npm run start`
    - **Health check path:** `/api/health`
 6. Click **Apply**. Render begins the first build.
 
@@ -319,12 +369,15 @@ In the Render dashboard for the service:
 You don't need to run anything manually. The **Start Command** on every deploy runs:
 
 ```
-npx prisma db push --accept-data-loss --skip-generate
+npx prisma db push --skip-generate
 ```
 
 On the very first deploy this creates all tables in your Neon database. On
-subsequent deploys it applies any schema changes. `--accept-data-loss` only
-affects destructive schema changes; the first-run creation is safe.
+subsequent deploys it applies additive schema changes (new columns, new
+tables, new indexes) cleanly. **`--accept-data-loss` is intentionally NOT
+passed** because your Neon database now contains real user data — Prisma
+will fail the deploy loudly if a schema change would drop a column or
+table, and you should switch to an explicit `prisma migrate` in that case.
 
 > If you'd rather run it once by hand from your laptop before the first deploy:
 > `DATABASE_URL='postgresql://...neon...?sslmode=require' npx prisma db push`

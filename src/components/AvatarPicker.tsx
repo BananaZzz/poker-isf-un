@@ -2,13 +2,49 @@
 import { AVATARS } from '@/lib/avatars';
 import clsx from 'clsx';
 
-export function AvatarBadge({ id, size = 40, url }: { id: string; size?: number; url?: string | null }) {
-  const a = AVATARS.find((x) => x.id === id) ?? AVATARS[0];
-  if (url) {
+interface AvatarUser {
+  id?: string | null;                    // user id, used to build the Postgres-backed URL
+  avatar?: string | null;                // standard avatar id (fallback)
+  avatarUrl?: string | null;             // legacy Phase-2 filesystem URL (still honored)
+  avatarUpdatedAt?: string | number | null; // ms/ISO — used for cache-busting
+}
+
+/**
+ * Resolve the best avatar image source, with three-tier fallback:
+ *   1. Postgres-backed uploaded avatar (via /api/users/[id]/avatar?v=...)
+ *   2. Legacy ephemeral avatarUrl (Phase-2 only; probably 404 in prod)
+ *   3. Standard casino avatar glyph (rendered inline, no network)
+ */
+function resolveImage(u: AvatarUser | undefined): string | null {
+  if (!u) return null;
+  if (u.id && u.avatarUpdatedAt) {
+    const v = typeof u.avatarUpdatedAt === 'number' ? u.avatarUpdatedAt : new Date(u.avatarUpdatedAt).getTime();
+    return `/api/users/${u.id}/avatar?v=${v}`;
+  }
+  if (u.avatarUrl) return u.avatarUrl;
+  return null;
+}
+
+/**
+ * Backward-compatible props: callers still pass { id, size, url } for legacy
+ * paths, or the new { user, size } shape.
+ */
+export function AvatarBadge({
+  id, size = 40, url, user,
+}: {
+  id?: string;
+  size?: number;
+  url?: string | null;
+  user?: AvatarUser;
+}) {
+  const resolvedUser: AvatarUser | undefined = user ?? (id ? { avatar: id, avatarUrl: url ?? null } : undefined);
+  const a = AVATARS.find((x) => x.id === (resolvedUser?.avatar ?? id)) ?? AVATARS[0];
+  const src = resolveImage(resolvedUser);
+  if (src) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={url}
+        src={src}
         alt=""
         onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
         className="rounded-full object-cover border border-black/40"

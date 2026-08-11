@@ -13,6 +13,7 @@ interface PlayerState {
   id: string;
   username: string;
   avatar: string;
+  avatarUpdatedAt?: number | null;
   seat: number;
   chips: number;
   currentBet: number;
@@ -59,33 +60,54 @@ interface Meta {
   };
 }
 
+interface LobbyPlayerRow {
+  userId: string;
+  username: string;
+  avatar: string;
+  avatarUrl?: string | null;
+  avatarUpdatedAt?: number | null;
+  seat: number;
+  ready: boolean;
+  chips: number;
+  initialBuyIn: number;
+  totalRebuys: number;
+  bustedOut: boolean;
+  sittingOut: boolean;
+}
+
 function seatPos(seatIndex: number, total: number) {
   const angle = (Math.PI * 2 * seatIndex) / total - Math.PI / 2;
   const rx = 42, ry = 36;
   return { x: 50 + rx * Math.cos(angle), y: 50 + ry * Math.sin(angle) };
 }
 
-function useCountdown(deadlineMs: number | null) {
-  const [remaining, setRemaining] = useState(deadlineMs ?? 0);
+/**
+ * Live countdown driven off a server-issued deadline timestamp.
+ * The server owns actual timeout enforcement; this is display only. Refreshing
+ * or reconnecting reads the same actionDeadline from the state broadcast, so
+ * the visible timer resumes at the correct remaining seconds — it never
+ * restarts from a fresh 30-second window on rerender.
+ */
+function useDeadlineCountdown(deadline: number | null) {
+  const [remaining, setRemaining] = useState<number>(() =>
+    deadline === null ? 0 : Math.max(0, deadline - Date.now())
+  );
   useEffect(() => {
-    if (deadlineMs === null) { setRemaining(0); return; }
-    const start = performance.now();
-    const initial = deadlineMs;
-    let raf = 0;
-    const tick = (t: number) => {
-      const elapsed = t - start;
-      setRemaining(Math.max(0, initial - elapsed));
-      if (initial - elapsed > 0) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [deadlineMs]);
+    if (deadline === null) { setRemaining(0); return; }
+    setRemaining(Math.max(0, deadline - Date.now()));
+    const id = setInterval(() => {
+      const left = Math.max(0, deadline - Date.now());
+      setRemaining(left);
+      if (left === 0) clearInterval(id);
+    }, 250);
+    return () => clearInterval(id);
+  }, [deadline]);
   return remaining;
 }
 
 export function PokerTable({
   state, legal, meta, meId, lobbyId, isHost,
-  onSessionEnded,
+  myLobbyPlayer, lobbyPlayers,
 }: {
   state: GameState;
   legal: Legal | null;
@@ -93,7 +115,8 @@ export function PokerTable({
   meId: string;
   lobbyId: string;
   isHost: boolean;
-  onSessionEnded?: () => void;
+  myLobbyPlayer?: LobbyPlayerRow | null;
+  lobbyPlayers?: LobbyPlayerRow[];
 }) {
   const seats = state.players.slice().sort((a, b) => a.seat - b.seat);
   const total = Math.max(seats.length, 2);
@@ -111,15 +134,27 @@ export function PokerTable({
 
   const myTurn = me !== null && state.currentPlayerSeat === me.seat;
 
-  // Winner banner — delayed until per-seat showdown reveals finish
-  const [banner, setBanner] = useState<{ lines: { title: string; sub: string }[] } | null>(null);
+  // Turn timer (server-authoritative deadline)
+  const remainingMs = useDeadlineCountdown(state.currentPlayerSeat !== null ? state.actionDeadline : null);
+  const remainingSec = Math.ceil(remainingMs / 1000);
+  const timerCritical = remainingMs > 0 && remainingMs <= 5000;
+  const timerLow = remainingMs > 0 && remainingMs <= 10000;
+
+  // ---- Winner banner lifecycle ----
+  //
+  // Bug fixed: the banner used to sometimes stay forever because it was cleared
+  // only by a setTimeout that could be cancelled by a rerender before firing.
+  // Now the banner is bound to the hand it was produced for: whenever
+  // state.handNumber advances past the banner's hand, or state.phase leaves
+  // HAND_COMPLETE, the banner is cleared synchronously.
+  const [banner, setBanner] = useState<{ handNumber: number; lines: { title: string; sub: string }[] } | null>(null);
   const shownHandRef = useRef<number>(-1);
+
   useEffect(() => {
     if (!state.showdown || state.showdown.length === 0) return;
     if (shownHandRef.current === state.handNumber) return;
     shownHandRef.current = state.handNumber;
 
-    // Count players whose cards are being revealed (excluding me)
     const revealed = state.players.filter(
       (p) => p.holeCards.length === 2 && p.id !== meId && p.status !== PlayerStatus.FOLDED
     ).length;
@@ -127,7 +162,6 @@ export function PokerTable({
     const extra = meta?.pacing?.showdownExtraForBannerMs ?? 400;
     const revealDelay = revealed * perPlayer + extra;
 
-    // Group winners by potIndex so split/side pots show correctly
     const grouped = new Map<number, { players: string[]; amount: number; handName: string }>();
     for (const w of state.showdown) {
       const key = w.potIndex ?? 0;
@@ -145,10 +179,22 @@ export function PokerTable({
         sub: v.handName,
       }));
 
-    const showT = setTimeout(() => setBanner({ lines }), revealDelay);
-    const hideT = setTimeout(() => setBanner(null), revealDelay + 3200);
+    const hand = state.handNumber;
+    const showT = setTimeout(() => setBanner({ handNumber: hand, lines }), revealDelay);
+    const hideT = setTimeout(() => {
+      // only clear if we're still showing this hand's banner
+      setBanner((b) => (b && b.handNumber === hand ? null : b));
+    }, revealDelay + 3200);
     return () => { clearTimeout(showT); clearTimeout(hideT); };
   }, [state.handNumber, state.showdown, state.players, meId, meta]);
+
+  // Belt-and-braces: any time the visible hand advances past the banner's
+  // hand, or we leave the completion phase, drop the banner immediately.
+  useEffect(() => {
+    if (banner && (banner.handNumber !== state.handNumber || (state.phase !== 'HAND_COMPLETE' && state.phase !== 'SHOWDOWN'))) {
+      setBanner(null);
+    }
+  }, [banner, state.handNumber, state.phase]);
 
   function send(type: ActionType, amount?: number) {
     getSocket().emit('game:action', { lobbyId, type, amount });
@@ -167,21 +213,25 @@ export function PokerTable({
   // Blind timer
   const [nextBlindLocalMs, setNextBlindLocalMs] = useState<number | null>(null);
   useEffect(() => { setNextBlindLocalMs(meta?.nextBlindMs ?? null); }, [meta?.nextBlindMs, state.handNumber]);
-  const blindRem = useCountdown(nextBlindLocalMs);
+  const blindRem = useDeadlineCountdown(nextBlindLocalMs !== null ? Date.now() + nextBlindLocalMs : null);
   const blindLabel = nextBlindLocalMs ? `${Math.floor(blindRem / 60000).toString().padStart(2, '0')}:${Math.floor((blindRem / 1000) % 60).toString().padStart(2, '0')}` : null;
 
-  // Bust panel for me
-  const myLobbyPlayer = null; // fed via lobby snapshot elsewhere; we detect bust via engine chips
-  const iAmBust = me ? me.chips <= 0 && state.phase !== 'HAND_COMPLETE' && !state.players.some((p) => p.id === meId && p.status === PlayerStatus.ACTIVE) : false;
+  // Bust panel: derived from the persistent lobby snapshot (NOT from the engine
+  // state, because rebuildEngineFromDb filters out chips===0 players between
+  // hands so the busted player no longer appears in `seats`). This was the
+  // production rebuy bug: the panel never rendered because `me` was null.
+  const iAmBust =
+    !!myLobbyPlayer &&
+    myLobbyPlayer.chips === 0 &&
+    !myLobbyPlayer.sittingOut;
 
   return (
     <div className="card-panel relative">
-      {/* Header */}
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <div className="text-sm text-ink-500">
           Hand #{state.handNumber} · <span className="text-brass-400">{state.phase}</span>
         </div>
-        <div className="text-sm text-ink-500 flex items-center gap-3">
+        <div className="text-sm text-ink-500 flex items-center gap-3 flex-wrap">
           <span>SB {formatCurrency(state.smallBlind)} / BB {formatCurrency(state.bigBlind)}</span>
           {meta?.nextSmallBlind && (
             <span className="text-brass-400">
@@ -192,9 +242,7 @@ export function PokerTable({
         </div>
       </div>
 
-      {/* Table */}
       <div className="relative aspect-[16/10] felt rounded-[45%_/_30%] mx-auto max-w-4xl">
-        {/* Pot + community */}
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
           <div className="chip px-3 py-1 text-sm">Pot {formatCurrency(state.pot)}</div>
           <div className="flex gap-2">
@@ -210,7 +258,6 @@ export function PokerTable({
           </div>
         </div>
 
-        {/* Seats */}
         {seats.map((p, idx) => {
           const uiIdx = (idx + rotate) % total;
           const pos = seatPos(uiIdx, total);
@@ -225,14 +272,17 @@ export function PokerTable({
               style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
             >
               <div className={clsx(
-                'rounded-xl px-2 py-1 min-w-[132px] text-center border transition',
+                'rounded-xl px-2 py-1 min-w-[104px] sm:min-w-[132px] text-center border transition',
                 isCurrent ? 'border-brass-400 shadow-[0_0_18px_rgba(212,175,81,.55)]' : 'border-ink-700',
                 'bg-ink-900/80 backdrop-blur',
                 (p.status === PlayerStatus.FOLDED) && 'opacity-40',
                 win && 'ring-2 ring-brass-400'
               )}>
                 <div className="flex items-center gap-2">
-                  <AvatarBadge id={p.avatar} size={28} />
+                  <AvatarBadge
+                    user={{ id: p.id, avatar: p.avatar, avatarUpdatedAt: p.avatarUpdatedAt ?? null }}
+                    size={28}
+                  />
                   <div className="text-left flex-1 min-w-0">
                     <div className="text-xs font-semibold truncate">{p.username}</div>
                     <div className="text-[10px] text-brass-400">{formatCurrency(p.chips)}</div>
@@ -273,6 +323,14 @@ export function PokerTable({
                 {p.currentBet > 0 && (
                   <div className="mt-1 chip inline-block px-2 py-0.5 text-[10px]">{formatCurrency(p.currentBet)}</div>
                 )}
+                {isCurrent && state.actionDeadline && (
+                  <div className={clsx(
+                    'mt-1 text-[10px] font-mono',
+                    timerCritical ? 'text-red-400' : timerLow ? 'text-orange-400' : 'text-brass-400'
+                  )}>
+                    ⏱ {remainingSec}s
+                  </div>
+                )}
                 {p.status === PlayerStatus.ALL_IN && <div className="text-[10px] text-red-400 mt-1">ALL-IN</div>}
                 {win && <div className="text-[10px] text-brass-400 mt-1">{formatCurrency(win.amount, { showSign: true })}</div>}
               </div>
@@ -281,76 +339,85 @@ export function PokerTable({
         })}
       </div>
 
-      {/* Winner banner (per pot, split-pot aware) */}
       {banner && (
-        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center pointer-events-none z-30">
-          <div className="rounded-2xl bg-black/70 border border-brass-500/70 backdrop-blur px-8 py-4 text-center shadow-2xl banner-in space-y-1">
+        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center pointer-events-none z-30 px-2">
+          <div className="rounded-2xl bg-black/70 border border-brass-500/70 backdrop-blur px-4 sm:px-8 py-4 text-center shadow-2xl banner-in space-y-1 max-w-full">
             {banner.lines.map((l, i) => (
               <div key={i}>
-                <div className="text-2xl font-display brass-text">{l.title}</div>
-                <div className="text-sm text-white/70">{l.sub}</div>
+                <div className="text-xl sm:text-2xl font-display brass-text">{l.title}</div>
+                <div className="text-xs sm:text-sm text-white/70">{l.sub}</div>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Action panel */}
-      <div className="mt-4 flex flex-wrap items-center gap-2 justify-center min-h-[52px]">
+      {/* Action panel — sticky on mobile so it's always reachable */}
+      <div className="mt-4 sticky bottom-0 z-20 bg-ink-900/95 backdrop-blur -mx-5 px-5 py-3 border-t border-ink-700 sm:static sm:bg-transparent sm:border-0 sm:py-0 sm:px-0 sm:mx-0">
         {myTurn && legal ? (
-          <>
-            {legal.actions.includes(ActionType.FOLD) && (
-              <button className="btn btn-danger" onClick={() => send(ActionType.FOLD)}>Fold</button>
-            )}
-            {legal.actions.includes(ActionType.CHECK) && (
-              <button className="btn" onClick={() => send(ActionType.CHECK)}>Check</button>
-            )}
-            {legal.actions.includes(ActionType.CALL) && (
-              <button className="btn" onClick={() => send(ActionType.CALL)}>Call {formatCurrency(legal.callAmount)}</button>
-            )}
-            {(legal.actions.includes(ActionType.BET) || legal.actions.includes(ActionType.RAISE)) && (
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min={legal.minRaiseTo}
-                  max={legal.maxBetTo}
-                  value={Math.max(legal.minRaiseTo, Math.min(betTo, legal.maxBetTo))}
-                  onChange={(e) => setBetTo(Number(e.target.value))}
-                  className="w-40"
-                />
-                <input
-                  type="number"
-                  className="input w-28"
-                  min={legal.minRaiseTo}
-                  max={legal.maxBetTo}
-                  value={betTo}
-                  onChange={(e) => setBetTo(Number(e.target.value))}
-                />
-                <button
-                  className="btn btn-primary"
-                  onClick={() =>
-                    send(legal.actions.includes(ActionType.BET) ? ActionType.BET : ActionType.RAISE, betTo)
-                  }
-                >
-                  {legal.actions.includes(ActionType.BET) ? `Bet ${formatCurrency(betTo)}` : `Raise to ${formatCurrency(betTo)}`}
-                </button>
-                <div className="flex gap-1">
-                  {[
-                    { l: '½', v: Math.max(legal.minRaiseTo, Math.floor(state.pot / 2)) },
-                    { l: '¾', v: Math.max(legal.minRaiseTo, Math.floor((state.pot * 3) / 4)) },
-                    { l: 'Pot', v: Math.max(legal.minRaiseTo, state.pot) },
-                  ].map((b) => (
-                    <button key={b.l} className="btn text-xs px-2 py-1" onClick={() => setBetTo(Math.min(b.v, legal.maxBetTo))}>{b.l}</button>
-                  ))}
-                </div>
+          <div className="flex flex-col gap-2">
+            {myTurn && state.actionDeadline && (
+              <div className={clsx(
+                'text-center text-xs font-mono',
+                timerCritical ? 'text-red-400' : timerLow ? 'text-orange-400' : 'text-white/70'
+              )}>
+                Your turn — {remainingSec}s
               </div>
             )}
-            {legal.actions.includes(ActionType.ALL_IN) && (
-              <button className="btn" onClick={() => send(ActionType.ALL_IN)}>All-in</button>
-            )}
-          </>
+            <div className="flex flex-wrap items-center gap-2 justify-center">
+              {legal.actions.includes(ActionType.FOLD) && (
+                <button className="btn btn-danger min-h-11" onClick={() => send(ActionType.FOLD)}>Fold</button>
+              )}
+              {legal.actions.includes(ActionType.CHECK) && (
+                <button className="btn min-h-11" onClick={() => send(ActionType.CHECK)}>Check</button>
+              )}
+              {legal.actions.includes(ActionType.CALL) && (
+                <button className="btn min-h-11" onClick={() => send(ActionType.CALL)}>Call {formatCurrency(legal.callAmount)}</button>
+              )}
+              {(legal.actions.includes(ActionType.BET) || legal.actions.includes(ActionType.RAISE)) && (
+                <div className="flex flex-wrap items-center gap-2 justify-center w-full sm:w-auto">
+                  <input
+                    type="range"
+                    min={legal.minRaiseTo}
+                    max={legal.maxBetTo}
+                    value={Math.max(legal.minRaiseTo, Math.min(betTo, legal.maxBetTo))}
+                    onChange={(e) => setBetTo(Number(e.target.value))}
+                    className="flex-1 min-w-[120px] sm:w-40 sm:flex-none"
+                  />
+                  <input
+                    type="number"
+                    className="input w-24"
+                    min={legal.minRaiseTo}
+                    max={legal.maxBetTo}
+                    value={betTo}
+                    onChange={(e) => setBetTo(Number(e.target.value))}
+                  />
+                  <button
+                    className="btn btn-primary min-h-11"
+                    onClick={() =>
+                      send(legal.actions.includes(ActionType.BET) ? ActionType.BET : ActionType.RAISE, betTo)
+                    }
+                  >
+                    {legal.actions.includes(ActionType.BET) ? `Bet ${formatCurrency(betTo)}` : `Raise to ${formatCurrency(betTo)}`}
+                  </button>
+                  <div className="flex gap-1 overflow-x-auto max-w-full">
+                    {[
+                      { l: '½', v: Math.max(legal.minRaiseTo, Math.floor(state.pot / 2)) },
+                      { l: '¾', v: Math.max(legal.minRaiseTo, Math.floor((state.pot * 3) / 4)) },
+                      { l: 'Pot', v: Math.max(legal.minRaiseTo, state.pot) },
+                    ].map((b) => (
+                      <button key={b.l} className="btn text-xs px-2 py-1 min-h-9 shrink-0" onClick={() => setBetTo(Math.min(b.v, legal.maxBetTo))}>{b.l}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {legal.actions.includes(ActionType.ALL_IN) && (
+                <button className="btn min-h-11" onClick={() => send(ActionType.ALL_IN)}>All-in</button>
+              )}
+            </div>
+          </div>
         ) : (
-          <div className="text-ink-500 text-sm">
+          <div className="text-center text-ink-500 text-sm min-h-11 flex items-center justify-center">
             {state.phase === 'WAITING'
               ? 'Waiting for at least 2 funded players…'
               : state.currentPlayerSeat === null
@@ -362,31 +429,32 @@ export function PokerTable({
 
       {/* Table controls */}
       <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-        <button className="btn text-xs" onClick={() => sitOut(true)}>Sit out</button>
-        <button className="btn text-xs" onClick={() => sitOut(false)}>Return to seat</button>
-        <button className="btn btn-danger text-xs" onClick={leaveTable}>Leave table</button>
+        <button className="btn text-xs min-h-10" onClick={() => sitOut(true)}>Sit out</button>
+        <button className="btn text-xs min-h-10" onClick={() => sitOut(false)}>Return to seat</button>
+        <button className="btn btn-danger text-xs min-h-10" onClick={leaveTable}>Leave table</button>
         {isHost && (
-          <button className="btn btn-danger text-xs" onClick={endGame}>End game</button>
+          <button className="btn btn-danger text-xs min-h-10" onClick={endGame}>End game</button>
         )}
       </div>
 
-      {/* Rebuy overlay */}
+      {/* Bust / rebuy overlay — sourced from lobby snapshot, not engine state */}
       {iAmBust && meta?.gameType === 'CASH' && (
-        <div className="absolute inset-x-0 bottom-16 flex justify-center z-30">
-          <div className="rounded-xl bg-black/80 border border-brass-500/70 px-5 py-3 flex items-center gap-3">
+        <div className="fixed sm:absolute inset-x-2 sm:inset-x-0 bottom-24 sm:bottom-16 flex justify-center z-40 px-2">
+          <div className="rounded-xl bg-black/85 border border-brass-500/70 px-4 py-3 flex flex-col sm:flex-row items-center gap-3 shadow-2xl max-w-md w-full">
             <div className="text-sm">You are out of chips.</div>
-            {meta.allowRebuy && (
-              <button className="btn btn-primary text-xs" onClick={rebuy}>
-                Rebuy {formatCurrency(meta.startingStack)}
-              </button>
-            )}
-            <button className="btn text-xs" onClick={() => sitOut(true)}>Sit out</button>
-            <button className="btn btn-danger text-xs" onClick={leaveTable}>Leave</button>
+            <div className="flex items-center gap-2 flex-wrap justify-center">
+              {meta.allowRebuy && (
+                <button className="btn btn-primary text-xs min-h-10" onClick={rebuy}>
+                  Rebuy {formatCurrency(meta.startingStack)}
+                </button>
+              )}
+              <button className="btn text-xs min-h-10" onClick={() => sitOut(true)}>Sit out</button>
+              <button className="btn btn-danger text-xs min-h-10" onClick={leaveTable}>Leave</button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Hand history */}
       <details className="mt-4 text-xs text-ink-500">
         <summary className="cursor-pointer">Hand history</summary>
         <div className="max-h-48 overflow-y-auto mt-2 space-y-1">

@@ -39,6 +39,7 @@ export default async function LobbyPage({ params }: { params: Promise<{ id: stri
           username: p.user.username,
           avatar: p.user.avatar,
           avatarUrl: p.user.avatarUrl,
+          avatarUpdatedAt: p.user.avatarUpdatedAt?.getTime() ?? null,
           seat: p.seat,
           ready: p.ready,
           chips: p.chips,

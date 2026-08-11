@@ -13,6 +13,7 @@ import { GamePhase, PlayerStatus, ActionType, type GameState } from '@/game/type
 import { attributePotFlows } from '@/game/attribution';
 import { nextBlindLevel } from '@/lib/money';
 import { ensureGameSession, closeGameSession, finalizePlayer } from './accounting';
+import { finalizeSettlement } from './settlement';
 import { PACING } from './pacing';
 
 interface RoomRuntime {
@@ -268,6 +269,7 @@ async function rebuildEngineFromDb(room: RoomRuntime) {
       id: p.userId,
       username: p.user.username,
       avatar: p.user.avatar,
+      avatarUpdatedAt: p.user.avatarUpdatedAt?.getTime() ?? null,
       seat: p.seat,
       chips: p.chips,
     }));
@@ -325,6 +327,7 @@ export async function startGame(io: Server, lobbyId: string, byUserId: string) {
     id: p.userId,
     username: p.user.username,
     avatar: p.user.avatar,
+    avatarUpdatedAt: p.user.avatarUpdatedAt?.getTime() ?? null,
     seat: p.seat,
     chips: lobby.startingStack,
   }));
@@ -486,6 +489,8 @@ async function autoEndTournament(io: Server, room: RoomRuntime) {
       await prisma.user.update({ where: { id: winner.userId }, data: { tourneyWins: { increment: 1 } } });
     }
     await closeGameSession(sessionId, room.handsPlayed);
+    // Settlement is only computed for CASH sessions; call is a no-op for tournaments.
+    await finalizeSettlement(sessionId);
   }
   await prisma.lobby.update({ where: { id: room.lobbyId }, data: { status: 'FINISHED', finishedAt: new Date() } });
   if (room.timer) clearTimeout(room.timer);
@@ -526,6 +531,7 @@ export async function handleEndGame(io: Server, lobbyId: string, byUserId: strin
       room.finalizedUsers.add(lp.userId);
     }
     await closeGameSession(sessionId, room.handsPlayed);
+    await finalizeSettlement(sessionId);
   }
   await prisma.lobby.update({ where: { id: lobbyId }, data: { status: 'FINISHED', finishedAt: new Date() } });
   if (room) rooms.delete(lobbyId);
@@ -597,6 +603,7 @@ export async function broadcastLobby(io: Server, lobbyId: string) {
       username: p.user.username,
       avatar: p.user.avatar,
       avatarUrl: p.user.avatarUrl,
+      avatarUpdatedAt: p.user.avatarUpdatedAt?.getTime() ?? null,
       seat: p.seat,
       ready: p.ready,
       chips: p.chips,

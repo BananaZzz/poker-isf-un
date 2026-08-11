@@ -22,6 +22,7 @@ export interface SeatInput {
   id: string;
   username: string;
   avatar: string;
+  avatarUpdatedAt?: number | null;
   seat: number;
   chips: number;
 }
@@ -34,6 +35,7 @@ export function createInitialState(seats: SeatInput[], cfg: EngineConfig): GameS
       id: s.id,
       username: s.username,
       avatar: s.avatar,
+      avatarUpdatedAt: s.avatarUpdatedAt ?? null,
       seat: s.seat,
       chips: s.chips,
       currentBet: 0,

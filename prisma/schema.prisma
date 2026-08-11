@@ -15,7 +15,10 @@ model User {
   username       String   @unique
   passwordHash   String
   avatar         String   @default("avatar-1")
-  avatarUrl      String?  // uploaded image path (relative to /uploads), or null
+  avatarUrl      String?  // legacy Phase-2 field (ephemeral /uploads path); superseded by avatarData
+  avatarData     Bytes?   // uploaded profile image bytes (resized WebP, ≤ ~200 KB) — Postgres-backed
+  avatarMime     String?  // e.g. "image/webp"
+  avatarUpdatedAt DateTime?  // used for cache-busting via ?v=<timestamp>
   chips          Int      @default(0)   // deprecated: kept for backwards-compat; not used for balance
   netCents       Int      @default(0)   // lifetime cumulative net poker result, integer cents (may be negative)
   gamesPlayed    Int      @default(0)
@@ -33,6 +36,33 @@ model User {
   seats           LobbyPlayer[]
   invitesOut      Invite[]       @relation("InvitesFrom")
   participations  GameParticipant[]
+  debts           SettlementObligation[] @relation("SettlementDebtor")
+  credits         SettlementObligation[] @relation("SettlementCreditor")
+}
+
+// Bookkeeping-only settlement obligation between two players for a finished
+// cash session. Never triggers payment; the app only records who ought to
+// square up. Created at session finalization, one row per (session, debtor,
+// creditor) pair — enforced by the unique index so double finalization or
+// reconnect races cannot duplicate obligations.
+model SettlementObligation {
+  id              String   @id @default(cuid())
+  gameSessionId   String
+  debtorUserId    String
+  creditorUserId  String
+  amountCents     Int
+  status          String   @default("OPEN")     // OPEN | SETTLED
+  createdAt       DateTime @default(now())
+  settledAt       DateTime?
+  settledByUserId String?
+
+  session  GameSession @relation(fields: [gameSessionId], references: [id], onDelete: Cascade)
+  debtor   User        @relation("SettlementDebtor", fields: [debtorUserId], references: [id], onDelete: Cascade)
+  creditor User        @relation("SettlementCreditor", fields: [creditorUserId], references: [id], onDelete: Cascade)
+
+  @@unique([gameSessionId, debtorUserId, creditorUserId])
+  @@index([debtorUserId, status])
+  @@index([creditorUserId, status])
 }
 
 model Session {
@@ -121,9 +151,15 @@ model GameSession {
   smallBlindStart Int   @default(0)
   bigBlindStart   Int   @default(0)
 
+  // Flag flipped when settlement obligations have been generated for this
+  // session. Together with the SettlementObligation unique index this makes
+  // finalizeSettlement idempotent under reconnects / duplicate End-Game.
+  settlementDone Boolean @default(false)
+
   lobby        Lobby    @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
   participants GameParticipant[]
   transfers    HandTransfer[]
+  settlements  SettlementObligation[]
 }
 
 // One row per attributed slice of a pot: money that moved from a loser to a winner

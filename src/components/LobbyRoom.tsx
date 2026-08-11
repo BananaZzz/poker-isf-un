@@ -12,6 +12,7 @@ interface LobbyPlayer {
   username: string;
   avatar: string;
   avatarUrl?: string | null;
+  avatarUpdatedAt?: number | null;
   seat: number;
   ready: boolean;
   chips: number;
@@ -197,6 +198,8 @@ export function LobbyRoom({ me, initial }: { me: Me; initial: LobbySnap }) {
             meId={me.id}
             lobbyId={lobby.id}
             isHost={isHost}
+            myLobbyPlayer={myPlayer ?? null}
+            lobbyPlayers={lobby.players}
           />
         ) : (
           <div className="card-panel">
@@ -204,7 +207,14 @@ export function LobbyRoom({ me, initial }: { me: Me; initial: LobbySnap }) {
             <div className="grid gap-2">
               {lobby.players.map((p) => (
                 <div key={p.userId} className="flex items-center gap-3 rounded-lg border border-ink-700 px-3 py-2">
-                  <AvatarBadge id={p.avatar} url={p.avatarUrl ?? undefined} />
+                  <AvatarBadge
+                    user={{
+                      id: p.userId,
+                      avatar: p.avatar,
+                      avatarUrl: p.avatarUrl ?? null,
+                      avatarUpdatedAt: (p as any).avatarUpdatedAt ?? null,
+                    }}
+                  />
                   <div className="flex-1">
                     <div className="font-medium">
                       {p.username}

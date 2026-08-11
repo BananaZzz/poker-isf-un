@@ -36,6 +36,7 @@ export interface PlayerState {
   id: string;
   username: string;
   avatar: string;
+  avatarUpdatedAt?: number | null;  // ms since epoch, for cache-busting the /api/users/[id]/avatar image
   seat: number;
   chips: number;
   currentBet: number; // amount put in THIS betting round

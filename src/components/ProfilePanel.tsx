@@ -2,19 +2,21 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AvatarBadge, AvatarPicker } from './AvatarPicker';
+import { resizeToSquareWebp } from '@/lib/imageResize';
 
 interface UserLite {
   id: string;
   username: string;
   avatar: string;
   avatarUrl: string | null;
+  avatarUpdatedAt: string | null;
 }
 
 export function ProfilePanel({ user }: { user: UserLite }) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [avatar, setAvatar] = useState(user.avatar);
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(user.avatarUrl);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(user.avatarUpdatedAt);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -34,32 +36,44 @@ export function ProfilePanel({ user }: { user: UserLite }) {
     const f = e.target.files?.[0];
     if (!f) return;
     setErr(null);
-    const fd = new FormData();
-    fd.append('file', f);
     setBusy(true);
-    const r = await fetch('/api/profile/avatar', { method: 'POST', body: fd });
-    setBusy(false);
-    if (!r.ok) {
-      const j = await r.json().catch(() => ({}));
-      setErr(j.error ?? 'Upload failed');
-      return;
+    try {
+      // Client-side resize to 512×512 WebP so the request body stays small and
+      // the persisted Postgres blob is compact (typical ~30–150 KB).
+      const blob = await resizeToSquareWebp(f, 512, 0.85);
+      const fd = new FormData();
+      fd.append('file', new File([blob], 'avatar.webp', { type: 'image/webp' }));
+      const r = await fetch('/api/profile/avatar', { method: 'POST', body: fd });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setErr(j.error ?? 'Upload failed');
+        return;
+      }
+      const j = await r.json();
+      setUpdatedAt(j.avatarUpdatedAt);
+      router.refresh();
+    } catch (ex) {
+      setErr(`Could not process image: ${(ex as Error).message}`);
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = '';
     }
-    const j = await r.json();
-    setAvatarUrl(j.avatarUrl);
-    router.refresh();
   }
 
   async function removeUpload() {
     setBusy(true);
     const r = await fetch('/api/profile/avatar', { method: 'DELETE' });
     setBusy(false);
-    if (r.ok) { setAvatarUrl(null); router.refresh(); }
+    if (r.ok) { setUpdatedAt(null); router.refresh(); }
   }
 
   return (
     <div className="card-panel">
       <div className="flex items-center gap-3">
-        <AvatarBadge id={avatar} url={avatarUrl ?? undefined} size={64} />
+        <AvatarBadge
+          user={{ id: user.id, avatar, avatarUrl: user.avatarUrl, avatarUpdatedAt: updatedAt }}
+          size={64}
+        />
         <div>
           <div className="text-lg font-semibold">{user.username}</div>
           <div className="text-xs text-ink-500 mt-1">Profile</div>
@@ -71,21 +85,23 @@ export function ProfilePanel({ user }: { user: UserLite }) {
           <AvatarPicker value={avatar} onChange={pickStandard} />
         </div>
         <div>
-          <div className="text-xs text-ink-500 mb-2">Or upload an image (JPEG/PNG/WEBP, ≤ 5 MB)</div>
-          <div className="flex items-center gap-2">
+          <div className="text-xs text-ink-500 mb-2">Or upload an image (JPEG/PNG/WEBP, ≤ 5 MB — resized to 512×512)</div>
+          <div className="flex items-center gap-2 flex-wrap">
             <input
               ref={fileRef}
               type="file"
               accept="image/jpeg,image/png,image/webp"
               onChange={upload}
               className="text-xs"
+              disabled={busy}
             />
-            {avatarUrl && (
+            {updatedAt && (
               <button className="btn text-xs" onClick={removeUpload} disabled={busy}>Remove</button>
             )}
           </div>
         </div>
         {err && <div className="text-red-400 text-xs">{err}</div>}
+        {busy && <div className="text-ink-500 text-xs">Processing…</div>}
       </div>
     </div>
   );

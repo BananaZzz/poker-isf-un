@@ -30,7 +30,12 @@ services:
     # cryptic "Module not found: Can't resolve '@/lib/*'" errors at build.
     # `--include=dev` re-enables devDeps for the build step only.
     buildCommand: npm ci --include=dev && npm run build
-    startCommand: npx prisma db push --accept-data-loss --skip-generate && npm run start
+    # The production database now contains real user + game history. Do NOT
+    # allow silent destructive changes — `prisma db push` without
+    # --accept-data-loss will FAIL the deploy if a schema change would drop
+    # data. Fix by writing an explicit `prisma migrate` migration before
+    # re-deploying. Additive columns / tables continue to apply cleanly.
+    startCommand: npx prisma db push --skip-generate && npm run start
     envVars:
       - key: NODE_ENV
         value: production

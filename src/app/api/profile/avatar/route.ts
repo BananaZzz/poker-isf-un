@@ -1,18 +1,15 @@
 import { NextResponse } from 'next/server';
-import { mkdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { getSessionUser } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 
-const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
-const ALLOWED = new Map<string, string>([
-  ['image/jpeg', '.jpg'],
-  ['image/png', '.png'],
-  ['image/webp', '.webp'],
-]);
+// Guardrails:
+//  - clients resize + re-encode to WebP client-side (see ProfilePanel) so the
+//    stored blob is typically 30–150 KB;
+//  - server still enforces a hard cap and MIME magic-byte check so a hostile
+//    client can't dump a 50 MB PNG or arbitrary bytes into Postgres.
+const MAX_BYTES = 5 * 1024 * 1024; // 5 MB accepted (client normally sends <200 KB)
+const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
-// magic-byte sniff for the three allowed types
 function detectMime(buf: Buffer): string | null {
   if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
   if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
@@ -33,19 +30,31 @@ export async function POST(req: Request) {
   if (!mime || !ALLOWED.has(mime)) {
     return NextResponse.json({ error: 'only JPEG, PNG or WEBP allowed' }, { status: 415 });
   }
-  const ext = ALLOWED.get(mime)!;
-  const name = `${user.id}_${randomBytes(6).toString('hex')}${ext}`;
-  const dir = path.join(process.cwd(), 'public', 'uploads');
-  await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, name), buf);
-  const rel = `/uploads/${name}`;
-  await prisma.user.update({ where: { id: user.id }, data: { avatarUrl: rel } });
-  return NextResponse.json({ ok: true, avatarUrl: rel });
+  const now = new Date();
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      avatarData: buf,
+      avatarMime: mime,
+      avatarUpdatedAt: now,
+      // clear the legacy ephemeral-filesystem URL if present
+      avatarUrl: null,
+    },
+  });
+  return NextResponse.json({ ok: true, avatarUpdatedAt: now.toISOString() });
 }
 
 export async function DELETE() {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-  await prisma.user.update({ where: { id: user.id }, data: { avatarUrl: null } });
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      avatarData: null,
+      avatarMime: null,
+      avatarUpdatedAt: new Date(),
+      avatarUrl: null,
+    },
+  });
   return NextResponse.json({ ok: true });
 }
