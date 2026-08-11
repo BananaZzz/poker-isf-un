@@ -1,0 +1,82 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  avatar       String   @default("avatar-1")
+  chips        Int      @default(10000)
+  gamesPlayed  Int      @default(0)
+  wins         Int      @default(0)
+  tourneyWins  Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  sessions   Session[]
+  lobbies    Lobby[]        @relation("HostLobbies")
+  seats      LobbyPlayer[]
+  invitesOut Invite[]       @relation("InvitesFrom")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Lobby {
+  id            String   @id @default(cuid())
+  name          String
+  hostId        String
+  inviteCode    String   @unique
+  gameType      String   // "CASH" | "TOURNAMENT"
+  maxPlayers    Int      @default(6)
+  startingStack Int      @default(2000)
+  smallBlind    Int      @default(10)
+  bigBlind      Int      @default(20)
+  blindSpeed    String   @default("NORMAL") // SLOW | NORMAL | TURBO
+  actionTimer   Int      @default(30)
+  password      String?
+  status        String   @default("WAITING") // WAITING | RUNNING | FINISHED
+  createdAt     DateTime @default(now())
+
+  host    User          @relation("HostLobbies", fields: [hostId], references: [id], onDelete: Cascade)
+  players LobbyPlayer[]
+  invites Invite[]
+}
+
+model LobbyPlayer {
+  id       String  @id @default(cuid())
+  lobbyId  String
+  userId   String
+  seat     Int
+  ready    Boolean @default(false)
+  chips    Int
+  joinedAt DateTime @default(now())
+
+  lobby Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([lobbyId, userId])
+  @@unique([lobbyId, seat])
+}
+
+model Invite {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  lobbyId   String
+  createdBy String
+  createdAt DateTime @default(now())
+
+  lobby   Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
+  creator User  @relation("InvitesFrom", fields: [createdBy], references: [id], onDelete: Cascade)
+}

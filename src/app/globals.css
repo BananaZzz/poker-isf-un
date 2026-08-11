@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: radial-gradient(1200px 800px at 50% -10%, #14251a 0%, #0a0d10 55%, #05070a 100%);
+  color: #e5e7eb;
+  min-height: 100vh;
+}
+
+.brass-text {
+  background: linear-gradient(180deg, #f4e6b2 0%, #d4af51 45%, #8f721e 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.card-face {
+  background: linear-gradient(180deg, #fafafa 0%, #e7e7e7 100%);
+  color: #111;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0,0,0,.4), 0 0 0 1px rgba(0,0,0,.2);
+}
+.card-back {
+  background:
+    repeating-linear-gradient(45deg, #4b0f1a 0 6px, #7a1a2b 6px 12px);
+  border: 1px solid #0a0a0a;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0,0,0,.5), inset 0 0 0 3px #d4af51;
+}
+
+.felt {
+  background:
+    radial-gradient(ellipse at center, #175030 0%, #0f3a24 55%, #0a2517 100%);
+  box-shadow: inset 0 0 120px rgba(0,0,0,.55), 0 20px 60px rgba(0,0,0,.55);
+}
+
+.chip {
+  border-radius: 9999px;
+  background: radial-gradient(circle at 30% 30%, #f4e6b2, #d4af51 55%, #8f721e 100%);
+  color: #1a1408;
+  border: 2px solid #6a5518;
+  box-shadow: 0 1px 3px rgba(0,0,0,.5);
+  font-weight: 700;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition;
+  @apply bg-ink-700 hover:bg-ink-600 text-white border border-ink-600;
+}
+.btn-primary {
+  @apply bg-brass-500 hover:bg-brass-400 text-black border-brass-600;
+}
+.btn-danger {
+  @apply bg-red-700 hover:bg-red-600 text-white border-red-800;
+}
+.input {
+  @apply w-full rounded-lg bg-ink-800 border border-ink-600 px-3 py-2 text-sm text-white placeholder:text-ink-500;
+  @apply focus:outline-none focus:border-brass-500;
+}
+.card-panel {
+  @apply rounded-xl bg-ink-900/80 border border-ink-700 p-5 backdrop-blur;
+}
