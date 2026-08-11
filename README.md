@@ -284,7 +284,7 @@ git push -u origin claude/texas-holdem-poker-platform-nj4y14
    - **Branch:** `claude/texas-holdem-poker-platform-nj4y14`
    - **Plan:** `free`
    - **Region:** `frankfurt` (change here if you want)
-   - **Build command:** `npm ci && npm run build`
+   - **Build command:** `npm ci --include=dev && npm run build`
    - **Start command:** `npx prisma db push --accept-data-loss --skip-generate && npm run start`
    - **Health check path:** `/api/health`
 6. Click **Apply**. Render begins the first build.
@@ -295,7 +295,7 @@ If instead you prefer creating the service manually (skip Blueprint):
 - Environment: **Node**.
 - Region: whatever you like.
 - Branch: `claude/texas-holdem-poker-platform-nj4y14`.
-- **Build Command:** `npm ci && npm run build`
+- **Build Command:** `npm ci --include=dev && npm run build`
 - **Start Command:** `npx prisma db push --accept-data-loss --skip-generate && npm run start`
 - **Plan:** Free.
 - Under **Advanced**, set **Health Check Path** to `/api/health`.
@@ -367,6 +367,24 @@ Every push to the branch specified in `render.yaml` triggers a rebuild
 
 Schema changes: bump `prisma/schema.prisma`, commit, push. The start command
 re-runs `prisma db push` on the new container.
+
+### Troubleshooting
+
+**Build fails with `Module not found: Can't resolve '@/lib/*'`.** Your build
+command is `npm ci` (without `--include=dev`). Render's `NODE_ENV=production`
+makes npm skip devDependencies, which removes `typescript` — and without
+`typescript` installed, Next.js drops the `paths` alias table from
+`tsconfig.json`. Fix: change the build command to
+`npm ci --include=dev && npm run build`.
+
+**`prisma db push` fails on first deploy with an auth error.** Confirm
+`DATABASE_URL` points at your Neon **pooled** endpoint (URL contains
+`-pooler`) with `?sslmode=require`.
+
+**Socket.IO won't upgrade to WSS.** Check DevTools → Network → filter WS. The
+request to `/api/socket` should return `101 Switching Protocols`. If you see
+`400`, verify you're loading the app over `https://` (not `http://`) and that
+you aren't sitting behind a proxy stripping `Upgrade:` headers.
 
 ### Known Render Free limitations
 
