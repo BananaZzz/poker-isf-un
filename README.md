@@ -261,6 +261,43 @@ tracks who won chips from whom during hands, live during play. Settlement
 obligations describe who ought to hand over cash after a session ends, based
 on the finalized net result including rebuys. Do not mix.
 
+## Voluntary card reveal
+
+When a hand ends **without** a real showdown — everyone else folded — the
+winner's hole cards are hidden from opponents. The winner sees a small
+`👁 Show cards` control below their own seat and can flip the cards face-up
+for the table.
+
+Server-authoritative (`player:revealCards` socket event). The server
+validates that the requester is a real player at that table, the hand is
+complete, the hand did not go to a mandatory showdown, and the handNumber
+matches — no stale-hand payloads, no cross-player reveals. Reveal state
+lives on `GameState.voluntaryReveals` and `mandatoryShowdown`, resets on
+every `startNewHand`, and reconnects restore the current set. Real
+rules-mandated showdowns still expose all contenders' cards regardless of
+this flag.
+
+## Player network — profiles + connections
+
+- `/players` — paginated username search (`/api/players/search`, auth-required
+  so the user table is not enumerable by unauthenticated visitors).
+- `/players/[username]` — public profile: avatar, member-since, general
+  stats, recent completed games (opt-out via `User.showHistoryPublic`),
+  shared games with the viewer, and — for another player's profile only —
+  the settlement obligations **between viewer and profile owner** with
+  aggregate You Owe / They Owe totals.
+- Global privacy rule: obligations involving unrelated third parties are
+  **never** rendered on another user's profile — the SQL is scoped to
+  `(viewer, profile)` pairs. Only the dashboard shows your full open-balances
+  ledger.
+- **Connections** — `PlayerConnection { requester, recipient, status }` with
+  a unique index preventing duplicate requests. States: NONE / PENDING_SENT /
+  PENDING_RECEIVED / CONNECTED / SELF. `POST /api/connections/request`
+  auto-accepts when the target has already requested us. Accept/decline
+  restricted to the recipient; either party may remove.
+- Header shows a pending-request badge next to "Players" when the viewer
+  has incoming friend requests.
+
 ## Uploaded avatars — Postgres-backed
 
 Uploaded profile images are stored in Postgres (`User.avatarData` BYTEA,

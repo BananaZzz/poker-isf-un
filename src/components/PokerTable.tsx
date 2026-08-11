@@ -37,6 +37,8 @@ interface GameState {
   showdown: { playerId: string; amount: number; handName: string; potIndex?: number }[] | null;
   history: string[];
   actionDeadline: number | null;
+  voluntaryReveals?: string[];
+  mandatoryShowdown?: boolean;
 }
 interface Legal {
   actions: ActionType[];
@@ -273,7 +275,7 @@ export function PokerTable({
             >
               <div className={clsx(
                 'rounded-xl px-2 py-1 min-w-[104px] sm:min-w-[132px] text-center border transition',
-                isCurrent ? 'border-brass-400 shadow-[0_0_18px_rgba(212,175,81,.55)]' : 'border-ink-700',
+                isCurrent ? 'ring-active border-transparent' : 'border-ink-700',
                 'bg-ink-900/80 backdrop-blur',
                 (p.status === PlayerStatus.FOLDED) && 'opacity-40',
                 win && 'ring-2 ring-brass-400'
@@ -322,6 +324,25 @@ export function PokerTable({
                 </div>
                 {p.currentBet > 0 && (
                   <div className="mt-1 chip inline-block px-2 py-0.5 text-[10px]">{formatCurrency(p.currentBet)}</div>
+                )}
+                {p.id === meId &&
+                  state.phase === 'HAND_COMPLETE' &&
+                  !state.mandatoryShowdown &&
+                  p.holeCards.length === 2 &&
+                  !(state.voluntaryReveals ?? []).includes(meId) && (
+                    <button
+                      type="button"
+                      onClick={() => getSocket().emit('player:revealCards', { lobbyId, handNumber: state.handNumber })}
+                      className="mt-1 text-[10px] text-brass-400 hover:text-brass-300 flex items-center gap-1 mx-auto"
+                      title="Show your cards to the table"
+                    >
+                      <span aria-hidden>👁</span> Show cards
+                    </button>
+                  )}
+                {p.id === meId && (state.voluntaryReveals ?? []).includes(meId) && (
+                  <div className="mt-1 text-[10px] text-ink-500 flex items-center gap-1 justify-center">
+                    <span aria-hidden>👁</span> Revealed
+                  </div>
                 )}
                 {isCurrent && state.actionDeadline && (
                   <div className={clsx(

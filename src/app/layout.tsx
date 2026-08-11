@@ -5,6 +5,7 @@ import { getSessionUser } from '@/lib/auth';
 import { LogoutButton } from '@/components/LogoutButton';
 import { AvatarBadge } from '@/components/AvatarPicker';
 import { formatCurrency } from '@/lib/money';
+import { countPendingIncoming } from '@/lib/connections';
 
 export const metadata: Metadata = {
   title: 'Golden Room Poker',
@@ -19,6 +20,7 @@ export const viewport = {
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const user = await getSessionUser();
+  const pendingCount = user ? await countPendingIncoming(user.id).catch(() => 0) : 0;
   return (
     <html lang="en" className="dark">
       <body>
@@ -31,6 +33,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <nav className="flex items-center gap-3 text-sm">
               {user ? (
                 <>
+                  <Link href="/players" className="text-white/80 hover:text-white relative">
+                    Players
+                    {pendingCount > 0 && (
+                      <span className="absolute -top-2 -right-3 text-[10px] rounded-full bg-red-600 px-1.5 min-w-[16px] text-center">
+                        {pendingCount}
+                      </span>
+                    )}
+                  </Link>
                   <Link href="/dashboard" className="text-white/80 hover:text-white flex items-center gap-2">
                     <AvatarBadge
                       user={{

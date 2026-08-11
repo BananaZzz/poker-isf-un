@@ -6,6 +6,7 @@ import {
   startGame,
   handlePlayerAction,
   handleRebuy,
+  handleRevealCards,
   handleSitOut,
   handleLeaveTable,
   handleEndGame,
@@ -85,6 +86,11 @@ export function attachSocketServer(io: Server) {
 
     socket.on('game:rebuy', async ({ lobbyId }: { lobbyId: string }) => {
       try { await handleRebuy(io, lobbyId, userId); await broadcastLobby(io, lobbyId); }
+      catch (e) { socket.emit('error:msg', (e as Error).message); }
+    });
+
+    socket.on('player:revealCards', async ({ lobbyId, handNumber }: { lobbyId: string; handNumber: number }) => {
+      try { await handleRevealCards(io, lobbyId, userId, Number(handNumber)); }
       catch (e) { socket.emit('error:msg', (e as Error).message); }
     });
 

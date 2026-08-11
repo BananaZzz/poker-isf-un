@@ -66,6 +66,8 @@ export function createInitialState(seats: SeatInput[], cfg: EngineConfig): GameS
     potFlows: null,
     history: [],
     runoutPending: false,
+    voluntaryReveals: [],
+    mandatoryShowdown: false,
   };
 }
 
@@ -136,6 +138,8 @@ export function startNewHand(state: GameState): GameState {
   s.showdown = null;
   s.potFlows = null;
   s.runoutPending = false;
+  s.voluntaryReveals = [];
+  s.mandatoryShowdown = false;
   s.history = [`Hand #${s.handNumber} — deck shuffled`];
   s.deck = shuffle(buildDeck());
 
@@ -465,6 +469,7 @@ function finishHandUncalled(s: GameState, winner: PlayerState): GameState {
   s.phase = GamePhase.HAND_COMPLETE;
   s.currentPlayerSeat = null;
   s.actionDeadline = null;
+  s.mandatoryShowdown = false;   // winner may CHOOSE to reveal their cards
   return s;
 }
 
@@ -536,6 +541,7 @@ function doShowdown(s: GameState): GameState {
   s.phase = GamePhase.HAND_COMPLETE;
   s.currentPlayerSeat = null;
   s.actionDeadline = null;
+  s.mandatoryShowdown = true;    // multiple contenders reached showdown per rules
   return s;
 }
 
@@ -582,13 +588,14 @@ export function redactStateFor(state: GameState, viewerId: string | null): GameS
   const s: GameState = structuredClone(state);
   // deck is server-only
   s.deck = [];
-  const showdownOn = s.phase === GamePhase.SHOWDOWN || s.phase === GamePhase.HAND_COMPLETE;
+  const inResultPhase = s.phase === GamePhase.SHOWDOWN || s.phase === GamePhase.HAND_COMPLETE;
+  const revealed = new Set(s.voluntaryReveals ?? []);
   for (const p of s.players) {
-    if (p.id !== viewerId && !showdownOn) {
-      p.holeCards = p.holeCards.map(() => ({ suit: 'h' as const, rank: 2 as const })); // hidden marker; UI ignores rank
-      // simpler: mark as hidden by emptying
-      p.holeCards = [];
-    }
+    if (p.id === viewerId) continue;                    // always show own cards
+    if (revealed.has(p.id)) continue;                   // player chose to reveal
+    if (inResultPhase && s.mandatoryShowdown && p.status !== PlayerStatus.FOLDED) continue; // real showdown: rules-mandated reveal
+    // otherwise: hide
+    p.holeCards = [];
   }
   return s;
 }

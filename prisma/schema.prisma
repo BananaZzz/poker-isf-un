@@ -38,6 +38,32 @@ model User {
   participations  GameParticipant[]
   debts           SettlementObligation[] @relation("SettlementDebtor")
   credits         SettlementObligation[] @relation("SettlementCreditor")
+  connectionsOut  PlayerConnection[] @relation("ConnectionRequester")
+  connectionsIn   PlayerConnection[] @relation("ConnectionRecipient")
+
+  // Public profile: show recent game history on the player-profile page.
+  // Default true — private groups usually want to see who played what.
+  showHistoryPublic Boolean @default(true)
+}
+
+// Undirected friendship / player-network edge. The requester is the user who
+// first tapped "Connect"; recipient is the one who receives the request.
+// Once ACCEPTED the two are peers regardless of which side initiated.
+model PlayerConnection {
+  id           String   @id @default(cuid())
+  requesterId  String
+  recipientId  String
+  status       String   @default("PENDING")   // PENDING | ACCEPTED | DECLINED
+  createdAt    DateTime @default(now())
+  respondedAt  DateTime?
+
+  requester User @relation("ConnectionRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  recipient User @relation("ConnectionRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  // At most one row per ordered pair — duplicate "Connect" clicks are safe.
+  @@unique([requesterId, recipientId])
+  @@index([recipientId, status])
+  @@index([requesterId, status])
 }
 
 // Bookkeeping-only settlement obligation between two players for a finished

@@ -423,6 +423,36 @@ export async function handleRebuy(io: Server, lobbyId: string, userId: string) {
   }
 }
 
+/**
+ * Voluntary card reveal after an uncontested win. Server-authoritative:
+ *  - hand must be complete
+ *  - the hand must NOT have been a mandatory showdown (rules already exposed those cards)
+ *  - only the card owner may reveal their own hole cards
+ *  - hand number must match to reject stale-hand payloads
+ *  - user must be a real player in this room
+ * The state.voluntaryReveals list is mutated in place and re-broadcast; the
+ * engine's redactStateFor honours it. State resets on the next startNewHand.
+ */
+export async function handleRevealCards(
+  io: Server,
+  lobbyId: string,
+  userId: string,
+  handNumber: number
+) {
+  const room = rooms.get(lobbyId);
+  if (!room) throw new Error('game not running');
+  if (room.state.phase !== GamePhase.HAND_COMPLETE) throw new Error('hand not complete');
+  if (room.state.mandatoryShowdown) throw new Error('cards already shown by showdown');
+  if (room.state.handNumber !== handNumber) throw new Error('stale hand');
+  const player = room.state.players.find((p) => p.id === userId);
+  if (!player) throw new Error('not at this table');
+  if (player.holeCards.length === 0) throw new Error('no cards to reveal');
+  if (!room.state.voluntaryReveals.includes(userId)) {
+    room.state.voluntaryReveals = [...room.state.voluntaryReveals, userId];
+  }
+  broadcast(io, room);
+}
+
 export async function handleSitOut(io: Server, lobbyId: string, userId: string, sitOut: boolean) {
   await prisma.lobbyPlayer.updateMany({ where: { lobbyId, userId }, data: { sittingOut: sitOut } });
   const room = rooms.get(lobbyId);

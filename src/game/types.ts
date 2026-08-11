@@ -88,4 +88,18 @@ export interface GameState {
    * paces the runout with timers; this flag tells the client to expect it.
    */
   runoutPending: boolean;
+  /**
+   * Player IDs who have voluntarily flipped their hole cards face-up after a
+   * hand that did NOT reach a mandatory showdown (usually the winner of an
+   * everyone-folded pot). Reset at every startNewHand. Reconnecting during
+   * the result phase reads the current set so the flip is idempotent.
+   */
+  voluntaryReveals: string[];
+  /**
+   * True if this completed hand went to a real (rules-mandated) showdown —
+   * i.e. two or more players reached river with cards. False for hands that
+   * ended because everyone else folded ("uncontested"), in which case the
+   * winner's hole cards are hidden unless they voluntarily reveal them.
+   */
+  mandatoryShowdown: boolean;
 }
