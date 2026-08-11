@@ -111,15 +111,23 @@ export default function CreatePage() {
           </label>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <label className="text-sm flex items-center gap-2">
-            <input type="checkbox" checked={form.allowRebuy} onChange={(e) => up('allowRebuy', e.target.checked)} />
-            <span>Allow rebuy (cash game)</span>
-          </label>
+          {form.gameType === 'CASH' && (
+            <label className="text-sm flex items-center gap-2">
+              <input type="checkbox" checked={form.allowRebuy} onChange={(e) => up('allowRebuy', e.target.checked)} />
+              <span>Allow rebuy</span>
+            </label>
+          )}
           <label className="text-sm flex items-center gap-2">
             <input type="checkbox" checked={form.blindsIncrease} onChange={(e) => up('blindsIncrease', e.target.checked)} />
             <span>Increase blinds automatically</span>
           </label>
         </div>
+        {form.gameType === 'TOURNAMENT' && (
+          <div className="text-xs text-ink-500">
+            Tournaments do not allow rebuys. Players are eliminated on €0; final placement is by
+            elimination order (last remaining = 1st).
+          </div>
+        )}
         {form.blindsIncrease && (
           <div className="grid grid-cols-2 gap-4">
             <label className="text-sm">

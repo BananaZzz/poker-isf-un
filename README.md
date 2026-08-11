@@ -131,6 +131,54 @@ Server → Client events:
 The server enforces every rule: only whose turn it is may act; bets must
 respect min-raise and stack; timers auto-check/fold on expiry.
 
+## All-in runout pacing
+
+When a hand reaches a state where no active player can act (everyone in the hand
+is all-in), the engine no longer auto-advances through the streets. Instead it
+sets `state.runoutPending = true` and stops. The **game manager** — the only
+place that owns time — steps through the remaining streets with `setTimeout`s
+(700 ms before the flop, ~950 ms between board cards, ~800 ms before showdown).
+Each timer is guarded by a `currentRunoutToken` bumped whenever a new hand
+starts, so a stale timer from a prior hand cannot mistakenly advance the
+current one. Duplicate socket events cannot trigger double progression: only
+one runout exists per hand at any time.
+
+## Showdown reveal sequencing
+
+The client waits for the seat-by-seat card animation before showing the winner
+banner. The delay equals `revealedPlayers × showdownRevealPerPlayerMs +
+showdownExtraForBannerMs` (both come from the server's `PACING` constants in
+the state broadcast). This means split pots and side pots each get their own
+banner line, and the "who wins" reveal never precedes the cards.
+
+## Pairwise accounting via pot flows
+
+The dashboard's "Performance by opponent" is **not** derived from overall game
+results. Every finished hand persists real `HandTransfer` rows: for each pot,
+each losing contributor's amount is distributed among that pot's winner(s) in
+proportion to the winner's award share. The algorithm lives in
+`src/game/attribution.ts` and is covered by unit tests (`attribution.test.ts`,
+`pairwiseInvariants.test.ts`) proving:
+
+- winners' own contributions never transfer to themselves,
+- Σ (pairwise flows within a hand) equals each player's chip delta,
+- Σ (pairwise flows within a hand) sums to €0 across all players,
+- A → B is always the additive inverse of B → A,
+- split pots divide loser contributions proportionally,
+- side pots are attributed independently per pot index.
+
+Dashboard reads the aggregated `HandTransfer` rows via two Prisma `groupBy`
+queries and shows `Σ transfers TO me FROM opp  −  Σ transfers FROM me TO opp`.
+
+## Tournament ranking
+
+Tournament placement is determined by **elimination order**, not net cash
+result. Each `LobbyPlayer` stores `eliminatedAt`, `eliminatedHand`, and
+`placement` (1 = last remaining). When a tournament reaches a single funded
+player, the manager auto-finalizes: winner gets `placement = 1`, tourneyWins
+increments, and the session closes. **Tournament games do not allow rebuys**
+(enforced server-side even if the client tries to opt in).
+
 ## Currency, balances, and results
 
 All monetary values in the app are **integer minor units (cents)** — never

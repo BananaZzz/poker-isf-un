@@ -2,14 +2,15 @@ import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 
-export default async function InvitePage({ params }: { params: { code: string } }) {
-  const lobby = await prisma.lobby.findUnique({ where: { inviteCode: params.code } });
+export default async function InvitePage({ params }: { params: Promise<{ code: string }> }) {
+  const { code } = await params;
+  const lobby = await prisma.lobby.findUnique({ where: { inviteCode: code } });
   if (!lobby) {
     return <div className="card-panel max-w-md mx-auto text-center">Invite not found or expired.</div>;
   }
   const user = await getSessionUser();
   if (!user) {
-    redirect(`/register?invite=${params.code}`);
+    redirect(`/register?invite=${code}`);
   }
   // auto-join if not already in
   const existing = await prisma.lobbyPlayer.findFirst({

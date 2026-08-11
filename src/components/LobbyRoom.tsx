@@ -158,10 +158,16 @@ export function LobbyRoom({ me, initial }: { me: Me; initial: LobbySnap }) {
                 <tbody>
                   {sessionResult.participants
                     .slice()
-                    .sort((a: any, b: any) => b.netResult - a.netResult)
+                    .sort((a: any, b: any) => {
+                      if (sessionResult.gameType === 'TOURNAMENT') {
+                        const ap = a.placement ?? 999, bp = b.placement ?? 999;
+                        if (ap !== bp) return ap - bp;
+                      }
+                      return b.netResult - a.netResult;
+                    })
                     .map((p: any, i: number) => (
                       <tr key={p.id} className="border-t border-ink-700">
-                        <td className="py-2">{i + 1}</td>
+                        <td className="py-2">{sessionResult.gameType === 'TOURNAMENT' ? (p.placement ?? '—') : i + 1}</td>
                         <td className="py-2">{p.username}</td>
                         <td className="py-2 text-right">{formatCurrency(p.initialBuyIn)}</td>
                         <td className="py-2 text-right">{formatCurrency(p.totalRebuys)}</td>

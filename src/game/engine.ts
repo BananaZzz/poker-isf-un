@@ -8,6 +8,7 @@ import {
   type GameState,
   type PlayerAction,
   type PlayerState,
+  type PotFlow,
   type WinnerInfo,
 } from './types';
 
@@ -60,7 +61,9 @@ export function createInitialState(seats: SeatInput[], cfg: EngineConfig): GameS
     actionTimerMs: cfg.actionTimerMs,
     actionDeadline: null,
     showdown: null,
+    potFlows: null,
     history: [],
+    runoutPending: false,
   };
 }
 
@@ -129,6 +132,8 @@ export function startNewHand(state: GameState): GameState {
   s.minRaise = s.bigBlind;
   s.lastRaiseAmount = s.bigBlind;
   s.showdown = null;
+  s.potFlows = null;
+  s.runoutPending = false;
   s.history = [`Hand #${s.handNumber} — deck shuffled`];
   s.deck = shuffle(buildDeck());
 
@@ -375,7 +380,7 @@ function advance(s: GameState): GameState {
 }
 
 function advanceRound(s: GameState): GameState {
-  // collect currentBets into totalContribution already done incrementally; just reset currentBet
+  // Reset per-round bet state; totalContribution stays.
   for (const p of s.players) {
     p.currentBet = 0;
     p.hasActedThisRound = false;
@@ -385,9 +390,16 @@ function advanceRound(s: GameState): GameState {
   s.lastRaiseAmount = s.bigBlind;
   s.lastAggressorSeat = null;
 
-  // if no active players (all-ins), deal remaining board then showdown
-  const activeCount = s.players.filter((p) => p.status === PlayerStatus.ACTIVE).length;
+  return dealNextStreet(s);
+}
 
+/**
+ * Deals cards for the phase immediately following s.phase and updates
+ * currentPlayerSeat / runoutPending accordingly. Does NOT recurse — if no
+ * active players remain, sets runoutPending so the game manager can pace
+ * subsequent streets with async timers.
+ */
+export function dealNextStreet(s: GameState): GameState {
   const nextPhase = ((): GamePhase => {
     switch (s.phase) {
       case GamePhase.PRE_FLOP: return GamePhase.FLOP;
@@ -415,15 +427,20 @@ function advanceRound(s: GameState): GameState {
   s.phase = nextPhase;
 
   if (nextPhase === GamePhase.SHOWDOWN) {
+    s.runoutPending = false;
     return doShowdown(s);
   }
 
+  const activeCount = s.players.filter((p) => p.status === PlayerStatus.ACTIVE).length;
   if (activeCount <= 1) {
-    // no one can act; auto-run through remaining streets
-    return advanceRound(s);
+    // no one can act — pacer will call dealNextStreet again on a timer
+    s.runoutPending = true;
+    s.currentPlayerSeat = null;
+    s.actionDeadline = null;
+    return s;
   }
 
-  // first to act post-flop: first active player left of dealer
+  s.runoutPending = false;
   const nextSeat = firstToActPostFlop(s);
   s.currentPlayerSeat = nextSeat;
   s.actionDeadline = nextSeat !== null ? Date.now() + s.actionTimerMs : null;
@@ -460,35 +477,38 @@ function doShowdown(s: GameState): GameState {
   }));
   const pots = computePots(contribs);
 
+  // per-pot contributions (what each player put into THIS pot slice), for attribution
+  const perPotContrib = computePerPotContributions(s.players.map((p) => ({
+    playerId: p.id,
+    amount: p.totalContribution,
+    folded: p.status === PlayerStatus.FOLDED,
+  })));
+
   const evals = new Map<string, ReturnType<typeof evaluateBest7>>();
   for (const p of contenders) {
     evals.set(p.id, evaluateBest7([...p.holeCards, ...s.community]));
   }
 
   const winners: WinnerInfo[] = [];
-  for (const pot of pots) {
+  const potFlows: PotFlow[] = [];
+  for (let i = 0; i < pots.length; i++) {
+    const pot = pots[i];
     const eligibleContenders = contenders.filter((p) => pot.eligiblePlayerIds.includes(p.id));
     if (eligibleContenders.length === 0) continue;
-    // find best hand(s)
     let best = evals.get(eligibleContenders[0].id)!;
     let bestPlayers: PlayerState[] = [eligibleContenders[0]];
-    for (let i = 1; i < eligibleContenders.length; i++) {
-      const r = evals.get(eligibleContenders[i].id)!;
+    for (let j = 1; j < eligibleContenders.length; j++) {
+      const r = evals.get(eligibleContenders[j].id)!;
       const cmp = compareHandRank(r, best);
-      if (cmp > 0) {
-        best = r;
-        bestPlayers = [eligibleContenders[i]];
-      } else if (cmp === 0) {
-        bestPlayers.push(eligibleContenders[i]);
-      }
+      if (cmp > 0) { best = r; bestPlayers = [eligibleContenders[j]]; }
+      else if (cmp === 0) { bestPlayers.push(eligibleContenders[j]); }
     }
-    // split pot
     const each = Math.floor(pot.amount / bestPlayers.length);
     let remainder = pot.amount - each * bestPlayers.length;
-    // odd chip: give to first player left of dealer among winners
     const orderFromDealer = seatsInOrderFrom(s, s.dealerSeat, false)
       .filter((p) => bestPlayers.some((w) => w.id === p.id));
     const oddOrder = orderFromDealer.length ? orderFromDealer : bestPlayers;
+    const potWinners: { playerId: string; award: number }[] = [];
     for (const w of bestPlayers) {
       let award = each;
       if (remainder > 0 && oddOrder[0].id === w.id) {
@@ -496,21 +516,53 @@ function doShowdown(s: GameState): GameState {
         remainder = 0;
       }
       w.chips += award;
-      winners.push({
-        playerId: w.id,
-        amount: award,
-        handName: best.name,
-        handCards: best.cards,
-      });
+      winners.push({ playerId: w.id, amount: award, handName: best.name, handCards: best.cards, potIndex: i });
+      potWinners.push({ playerId: w.id, award });
       s.history.push(`${w.username} wins ${award} with ${best.name}`);
     }
+    potFlows.push({
+      potIndex: i,
+      potAmount: pot.amount,
+      contributions: (perPotContrib[i] ?? []).slice(),
+      winners: potWinners,
+      handName: best.name,
+    });
   }
   s.showdown = winners;
+  s.potFlows = potFlows;
   s.pot = 0;
   s.phase = GamePhase.HAND_COMPLETE;
   s.currentPlayerSeat = null;
   s.actionDeadline = null;
   return s;
+}
+
+/**
+ * Given each player's total contribution to the hand (folded or not),
+ * return per-pot contribution slices matching the pots returned by `computePots`.
+ * pots[i].contributions is the list of {playerId, amount} that went INTO pot i.
+ */
+function computePerPotContributions(contribs: PlayerContribution[]): Array<Array<{ playerId: string; amount: number }>> {
+  const remaining = contribs
+    .filter((c) => c.amount > 0)
+    .map((c) => ({ ...c }));
+  const slices: Array<Array<{ playerId: string; amount: number }>> = [];
+  while (remaining.length > 0) {
+    const positive = remaining.filter((c) => c.amount > 0);
+    if (positive.length === 0) break;
+    const min = Math.min(...positive.map((c) => c.amount));
+    const slice: Array<{ playerId: string; amount: number }> = [];
+    for (const c of remaining) {
+      const take = Math.min(c.amount, min);
+      if (take > 0) slice.push({ playerId: c.playerId, amount: take });
+      c.amount -= take;
+    }
+    slices.push(slice);
+    for (let i = remaining.length - 1; i >= 0; i--) {
+      if (remaining[i].amount === 0) remaining.splice(i, 1);
+    }
+  }
+  return slices;
 }
 
 /** Called when player timer expires. Auto CHECK if possible, else FOLD. */

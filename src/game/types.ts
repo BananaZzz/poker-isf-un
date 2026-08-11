@@ -50,6 +50,15 @@ export interface WinnerInfo {
   amount: number;
   handName: string;
   handCards?: Card[];
+  potIndex?: number;
+}
+
+export interface PotFlow {
+  potIndex: number;
+  potAmount: number;
+  contributions: Array<{ playerId: string; amount: number }>;
+  winners: Array<{ playerId: string; award: number }>;
+  handName: string;
 }
 
 export interface GameState {
@@ -70,5 +79,12 @@ export interface GameState {
   actionTimerMs: number;
   actionDeadline: number | null;
   showdown: WinnerInfo[] | null;
+  potFlows: PotFlow[] | null;
   history: string[]; // human-readable log
+  /**
+   * True when no active player can act any more (all remaining in-hand players
+   * are all-in) and there are still community cards to reveal. The game manager
+   * paces the runout with timers; this flag tells the client to expect it.
+   */
+  runoutPending: boolean;
 }

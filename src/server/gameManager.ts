@@ -7,10 +7,13 @@ import {
   timeoutAction,
   legalActions,
   redactStateFor,
+  dealNextStreet,
 } from '@/game/engine';
 import { GamePhase, PlayerStatus, ActionType, type GameState } from '@/game/types';
+import { attributePotFlows } from '@/game/attribution';
 import { nextBlindLevel } from '@/lib/money';
 import { ensureGameSession, closeGameSession, finalizePlayer } from './accounting';
+import { PACING } from './pacing';
 
 interface RoomRuntime {
   lobbyId: string;
@@ -19,6 +22,9 @@ interface RoomRuntime {
   timer: NodeJS.Timeout | null;
   nextHandTimer: NodeJS.Timeout | null;
   blindTimer: NodeJS.Timeout | null;
+  runoutTimer: NodeJS.Timeout | null;
+  currentRunoutHand: number; // hand number the current pacing timers belong to
+  currentRunoutToken: number; // bumped whenever a new hand starts so stale timers noop
   actionTimerMs: number;
   gameType: 'CASH' | 'TOURNAMENT';
   allowRebuy: boolean;
@@ -34,6 +40,10 @@ interface RoomRuntime {
   pendingBlindLevel: { sb: number; bb: number } | null;
   connectedUsers: Set<string>;
   handsPlayed: number;
+  // set of userIds whose participant row has already been finalized (idempotency guard)
+  finalizedUsers: Set<string>;
+  // ids of hands whose pot flows we've already persisted (idempotency guard)
+  persistedHands: Set<number>;
 }
 
 const rooms = new Map<string, RoomRuntime>();
@@ -43,10 +53,6 @@ async function loadLobby(lobbyId: string) {
     where: { id: lobbyId },
     include: { players: { include: { user: true }, orderBy: { seat: 'asc' } } },
   });
-}
-
-function computeNextBlinds(sb: number, mul: number) {
-  return nextBlindLevel(sb, mul);
 }
 
 function computeMeta(room: RoomRuntime) {
@@ -61,6 +67,7 @@ function computeMeta(room: RoomRuntime) {
     startingStack: room.startingStack,
     gameType: room.gameType,
     lobbyId: room.lobbyId,
+    pacing: PACING,
   };
 }
 
@@ -85,7 +92,9 @@ function scheduleAutoAction(io: Server, room: RoomRuntime) {
   if (seat === null) return;
   const player = room.state.players.find((p) => p.seat === seat);
   if (!player) return;
+  const token = room.currentRunoutToken;
   room.timer = setTimeout(() => {
+    if (token !== room.currentRunoutToken) return;
     try {
       room.state = timeoutAction(room.state, player.id);
       afterActionOrPhase(io, room);
@@ -98,34 +107,124 @@ function afterActionOrPhase(io: Server, room: RoomRuntime) {
   if (room.state.phase === GamePhase.HAND_COMPLETE) {
     if (room.timer) clearTimeout(room.timer);
     finishHand(io, room).catch(() => {});
-  } else if (room.state.currentPlayerSeat !== null) {
+    return;
+  }
+  if (room.state.runoutPending) {
+    // server-paced runout: no player can act — reveal next street on a timer
+    scheduleRunout(io, room);
+    return;
+  }
+  if (room.state.currentPlayerSeat !== null) {
     scheduleAutoAction(io, room);
   }
 }
 
+function scheduleRunout(io: Server, room: RoomRuntime) {
+  if (room.runoutTimer) clearTimeout(room.runoutTimer);
+  const token = room.currentRunoutToken;
+  const hand = room.state.handNumber;
+  // pick delay based on the phase we're about to move to
+  const delay =
+    room.state.phase === GamePhase.PRE_FLOP ? PACING.runoutBeforeFlopMs :
+    room.state.phase === GamePhase.RIVER ? PACING.runoutBeforeShowdownMs :
+    PACING.runoutBetweenBoardMs;
+  room.runoutTimer = setTimeout(() => {
+    if (token !== room.currentRunoutToken) return;
+    if (room.state.handNumber !== hand) return;
+    // reset per-round state manually (dealNextStreet doesn't do it) — mirror engine's advanceRound reset
+    for (const p of room.state.players) { p.currentBet = 0; p.hasActedThisRound = false; }
+    room.state.currentBet = 0;
+    room.state.minRaise = room.state.bigBlind;
+    room.state.lastRaiseAmount = room.state.bigBlind;
+    room.state.lastAggressorSeat = null;
+    room.state = dealNextStreet(room.state);
+    afterActionOrPhase(io, room);
+  }, delay);
+}
+
 async function finishHand(io: Server, room: RoomRuntime) {
-  room.handsPlayed += 1;
-  // persist stacks + bust status
-  const lobby = await prisma.lobby.findUnique({ where: { id: room.lobbyId }, include: { players: true } });
-  if (lobby) {
-    for (const sp of room.state.players) {
-      const lp = lobby.players.find((x) => x.userId === sp.id);
-      if (!lp) continue;
-      const busted = sp.chips <= 0;
-      await prisma.lobbyPlayer.update({
-        where: { id: lp.id },
-        data: {
-          chips: sp.chips,
-          bustedOut: busted ? true : lp.bustedOut,
-        },
+  const hand = room.state.handNumber;
+  if (!room.persistedHands.has(hand)) {
+    room.persistedHands.add(hand);
+    room.handsPlayed += 1;
+    // persist stacks + bust
+    const lobby = await prisma.lobby.findUnique({ where: { id: room.lobbyId }, include: { players: true } });
+    if (lobby) {
+      const activeStacks: { userId: string; chips: number; lp: typeof lobby.players[number] }[] = [];
+      for (const sp of room.state.players) {
+        const lp = lobby.players.find((x) => x.userId === sp.id);
+        if (!lp) continue;
+        const wasFunded = lp.chips > 0;
+        const nowBusted = sp.chips <= 0;
+        const eliminating = wasFunded && nowBusted;
+        await prisma.lobbyPlayer.update({
+          where: { id: lp.id },
+          data: {
+            chips: sp.chips,
+            bustedOut: nowBusted ? true : lp.bustedOut,
+            ...(room.gameType === 'TOURNAMENT' && eliminating && !lp.placement
+              ? {
+                  eliminatedAt: new Date(),
+                  eliminatedHand: hand,
+                  // temporary placement = count of still-funded participants +1 (fills bottom-up)
+                }
+              : {}),
+          },
+        });
+        activeStacks.push({ userId: sp.id, chips: sp.chips, lp });
+      }
+      // Tournament placement: eliminated this hand get placement = (fundedRemaining + 1..N)
+      if (room.gameType === 'TOURNAMENT') {
+        const eliminatedThisHand = activeStacks
+          .filter((x) => x.chips <= 0 && !x.lp.placement && x.lp.chips > 0)
+          .map((x) => x.userId);
+        // Note: after our update above lp.chips still shows the OLD value from the initial fetch
+        if (eliminatedThisHand.length > 0) {
+          const stillFunded = activeStacks.filter((x) => x.chips > 0).length;
+          // If multiple players bust in the same hand, they share the placements after the top;
+          // assign highest placement (largest number) to whoever finished the hand with the least
+          // — for MVP we assign them all the same "tied" placement = stillFunded + 1.
+          for (const uid of eliminatedThisHand) {
+            const lp = activeStacks.find((x) => x.userId === uid)!.lp;
+            await prisma.lobbyPlayer.update({ where: { id: lp.id }, data: { placement: stillFunded + 1 } });
+          }
+        }
+      }
+    }
+    // persist pot flows → HandTransfer
+    if (room.sessionId && room.state.potFlows && room.state.potFlows.length > 0) {
+      const transfers = attributePotFlows(room.state.potFlows);
+      if (transfers.length > 0) {
+        await prisma.handTransfer.createMany({
+          data: transfers.map((t) => ({
+            sessionId: room.sessionId!,
+            handNumber: hand,
+            potIndex: t.potIndex,
+            fromUserId: t.fromUserId,
+            toUserId: t.toUserId,
+            amountCents: t.amount,
+          })),
+        });
+      }
+      await prisma.gameSession.update({
+        where: { id: room.sessionId },
+        data: { handsPlayed: room.handsPlayed },
       });
     }
-  }
-  if (room.sessionId) {
-    await prisma.gameSession.update({ where: { id: room.sessionId }, data: { handsPlayed: room.handsPlayed } });
+    // tournament auto-finalize when only one player has chips
+    if (room.gameType === 'TOURNAMENT') {
+      const funded = (await prisma.lobbyPlayer.count({ where: { lobbyId: room.lobbyId, chips: { gt: 0 } } }));
+      if (funded <= 1) {
+        // set winner placement = 1
+        const last = await prisma.lobbyPlayer.findFirst({ where: { lobbyId: room.lobbyId, chips: { gt: 0 } } });
+        if (last) await prisma.lobbyPlayer.update({ where: { id: last.id }, data: { placement: 1 } });
+        await autoEndTournament(io, room);
+        return;
+      }
+    }
   }
 
-  // apply pending blind level between hands
+  // apply pending blind level between hands (never mid-hand)
   if (room.pendingBlindLevel) {
     room.currentSmallBlind = room.pendingBlindLevel.sb;
     room.currentBigBlind = room.pendingBlindLevel.bb;
@@ -136,7 +235,11 @@ async function finishHand(io: Server, room: RoomRuntime) {
   }
 
   if (room.nextHandTimer) clearTimeout(room.nextHandTimer);
-  room.nextHandTimer = setTimeout(() => startNext(io, room), 4500);
+  const tokenForNextHand = room.currentRunoutToken;
+  room.nextHandTimer = setTimeout(() => {
+    if (tokenForNextHand !== room.currentRunoutToken) return;
+    startNext(io, room);
+  }, PACING.betweenHandsMs);
 }
 
 function scheduleNextBlindLevel(room: RoomRuntime) {
@@ -146,13 +249,12 @@ function scheduleNextBlindLevel(room: RoomRuntime) {
     room.nextBlindDeadline = null;
     return;
   }
-  const nxt = computeNextBlinds(room.currentSmallBlind, room.blindMultiplier);
+  const nxt = nextBlindLevel(room.currentSmallBlind, room.blindMultiplier);
   room.nextSmallBlind = nxt.smallBlind;
   room.nextBigBlind = nxt.bigBlind;
   room.nextBlindDeadline = Date.now() + room.blindIntervalSec * 1000;
   if (room.blindTimer) clearTimeout(room.blindTimer);
   room.blindTimer = setTimeout(() => {
-    // enqueue the level; it applies after current hand
     room.pendingBlindLevel = { sb: nxt.smallBlind, bb: nxt.bigBlind };
   }, room.blindIntervalSec * 1000);
 }
@@ -160,7 +262,6 @@ function scheduleNextBlindLevel(room: RoomRuntime) {
 async function rebuildEngineFromDb(room: RoomRuntime) {
   const lobby = await loadLobby(room.lobbyId);
   if (!lobby) return;
-  // players eligible next hand: not busted (chips > 0) and not sitting out
   const seats = lobby.players
     .filter((p) => p.chips > 0 && !p.sittingOut)
     .map((p) => ({
@@ -186,9 +287,11 @@ async function startNext(io: Server, room: RoomRuntime) {
     room.state.phase = GamePhase.WAITING;
     room.state.currentPlayerSeat = null;
     room.state.showdown = null;
+    room.state.runoutPending = false;
     broadcast(io, room);
     return;
   }
+  room.currentRunoutToken += 1;
   room.state = startNewHand(room.state);
   broadcast(io, room);
   scheduleAutoAction(io, room);
@@ -201,7 +304,6 @@ export async function startGame(io: Server, lobbyId: string, byUserId: string) {
   if (lobby.players.length < 2) throw new Error('need at least 2 players');
   await prisma.lobby.update({ where: { id: lobbyId }, data: { status: 'RUNNING' } });
 
-  // initial buy-in equals starting stack for anyone who hasn't been credited yet
   for (const lp of lobby.players) {
     if (lp.initialBuyIn === 0) {
       await prisma.lobbyPlayer.update({
@@ -218,7 +320,7 @@ export async function startGame(io: Server, lobbyId: string, byUserId: string) {
     bigBlind: lobby.bigBlind,
   });
 
-  const room: RoomRuntime = rooms.get(lobbyId) ?? ({} as RoomRuntime);
+  const previous = rooms.get(lobbyId);
   const seats = lobby.players.map((p) => ({
     id: p.userId,
     username: p.user.username,
@@ -238,9 +340,12 @@ export async function startGame(io: Server, lobbyId: string, byUserId: string) {
     timer: null,
     nextHandTimer: null,
     blindTimer: null,
+    runoutTimer: null,
+    currentRunoutHand: 0,
+    currentRunoutToken: 0,
     actionTimerMs: lobby.actionTimer * 1000,
     gameType: (lobby.gameType as 'CASH' | 'TOURNAMENT'),
-    allowRebuy: lobby.allowRebuy,
+    allowRebuy: lobby.gameType === 'TOURNAMENT' ? false : lobby.allowRebuy,
     startingStack: lobby.startingStack,
     blindsIncrease: lobby.blindsIncrease,
     blindMultiplier: lobby.blindMultiplier ?? null,
@@ -251,11 +356,14 @@ export async function startGame(io: Server, lobbyId: string, byUserId: string) {
     nextBigBlind: null,
     nextBlindDeadline: null,
     pendingBlindLevel: null,
-    connectedUsers: room.connectedUsers ?? new Set(),
+    connectedUsers: previous?.connectedUsers ?? new Set(),
     handsPlayed: 0,
+    finalizedUsers: new Set(),
+    persistedHands: new Set(),
   };
   rooms.set(lobbyId, runtime);
   scheduleNextBlindLevel(runtime);
+  runtime.currentRunoutToken += 1;
   runtime.state = startNewHand(runtime.state);
   broadcast(io, runtime);
   scheduleAutoAction(io, runtime);
@@ -279,7 +387,15 @@ export async function handlePlayerAction(
   afterActionOrPhase(io, room);
 }
 
+// Rebuy request idempotency: at most one rebuy per lobby+user per bust cycle
+const rebuyLocks = new Map<string, number>();
 export async function handleRebuy(io: Server, lobbyId: string, userId: string) {
+  const key = `${lobbyId}:${userId}`;
+  const now = Date.now();
+  const last = rebuyLocks.get(key);
+  if (last !== undefined && now - last < 1500) return; // debounce duplicate socket clicks
+  rebuyLocks.set(key, now);
+
   const room = rooms.get(lobbyId);
   const lobby = await prisma.lobby.findUnique({ where: { id: lobbyId }, include: { players: true } });
   if (!lobby) throw new Error('not found');
@@ -297,7 +413,6 @@ export async function handleRebuy(io: Server, lobbyId: string, userId: string) {
       sittingOut: false,
     },
   });
-  // if waiting, try to start next
   if (room && room.state.phase === GamePhase.WAITING) {
     await startNext(io, room);
   } else if (room) {
@@ -306,10 +421,7 @@ export async function handleRebuy(io: Server, lobbyId: string, userId: string) {
 }
 
 export async function handleSitOut(io: Server, lobbyId: string, userId: string, sitOut: boolean) {
-  await prisma.lobbyPlayer.updateMany({
-    where: { lobbyId, userId },
-    data: { sittingOut: sitOut },
-  });
+  await prisma.lobbyPlayer.updateMany({ where: { lobbyId, userId }, data: { sittingOut: sitOut } });
   const room = rooms.get(lobbyId);
   if (room) broadcast(io, room);
 }
@@ -320,8 +432,7 @@ export async function handleLeaveTable(io: Server, lobbyId: string, userId: stri
   if (!lobby) throw new Error('not found');
   const lp = lobby.players.find((p) => p.userId === userId);
   if (!lp) throw new Error('not in lobby');
-  // finalize this participant
-  if (room && room.sessionId) {
+  if (room && room.sessionId && !room.finalizedUsers.has(userId)) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (user) {
       await finalizePlayer({
@@ -331,24 +442,59 @@ export async function handleLeaveTable(io: Server, lobbyId: string, userId: stri
         initialBuyIn: lp.initialBuyIn,
         totalRebuys: lp.totalRebuys,
         cashOutStack: lp.chips,
+        placement: lp.placement ?? null,
       });
+      room.finalizedUsers.add(userId);
     }
   }
   await prisma.lobbyPlayer.delete({ where: { id: lp.id } });
-  // pause / advance
   if (room) {
     if (room.state.currentPlayerSeat !== null) {
-      // if it was their turn, auto-fold
       const p = room.state.players.find((x) => x.id === userId);
       if (p && room.state.currentPlayerSeat === p.seat) {
-        try {
-          room.state = applyAction(room.state, userId, { type: ActionType.FOLD });
-        } catch { /* ignore */ }
+        try { room.state = applyAction(room.state, userId, { type: ActionType.FOLD }); } catch { /* ignore */ }
       }
     }
     await startNext(io, room);
   }
   await broadcastLobby(io, lobbyId);
+}
+
+async function autoEndTournament(io: Server, room: RoomRuntime) {
+  const lobby = await prisma.lobby.findUnique({ where: { id: room.lobbyId }, include: { players: true } });
+  if (!lobby) return;
+  const sessionId = room.sessionId;
+  if (sessionId) {
+    for (const lp of lobby.players) {
+      if (room.finalizedUsers.has(lp.userId)) continue;
+      const user = await prisma.user.findUnique({ where: { id: lp.userId } });
+      if (!user) continue;
+      await finalizePlayer({
+        sessionId,
+        userId: lp.userId,
+        username: user.username,
+        initialBuyIn: lp.initialBuyIn,
+        totalRebuys: lp.totalRebuys,
+        cashOutStack: lp.chips,
+        placement: lp.placement ?? null,
+      });
+      room.finalizedUsers.add(lp.userId);
+    }
+    // tourneyWins ++ for placement=1
+    const winner = lobby.players.find((p) => p.placement === 1);
+    if (winner) {
+      await prisma.user.update({ where: { id: winner.userId }, data: { tourneyWins: { increment: 1 } } });
+    }
+    await closeGameSession(sessionId, room.handsPlayed);
+  }
+  await prisma.lobby.update({ where: { id: room.lobbyId }, data: { status: 'FINISHED', finishedAt: new Date() } });
+  if (room.timer) clearTimeout(room.timer);
+  if (room.nextHandTimer) clearTimeout(room.nextHandTimer);
+  if (room.blindTimer) clearTimeout(room.blindTimer);
+  if (room.runoutTimer) clearTimeout(room.runoutTimer);
+  rooms.delete(room.lobbyId);
+  io.to(room.lobbyId).emit('session:ended', { lobbyId: room.lobbyId, sessionId });
+  await broadcastLobby(io, room.lobbyId);
 }
 
 export async function handleEndGame(io: Server, lobbyId: string, byUserId: string) {
@@ -359,10 +505,13 @@ export async function handleEndGame(io: Server, lobbyId: string, byUserId: strin
   if (room?.timer) clearTimeout(room.timer);
   if (room?.nextHandTimer) clearTimeout(room.nextHandTimer);
   if (room?.blindTimer) clearTimeout(room.blindTimer);
+  if (room?.runoutTimer) clearTimeout(room.runoutTimer);
+  if (room) room.currentRunoutToken += 1;
 
   const sessionId = room?.sessionId ?? null;
-  if (sessionId) {
+  if (sessionId && room) {
     for (const lp of lobby.players) {
+      if (room.finalizedUsers.has(lp.userId)) continue;
       const user = await prisma.user.findUnique({ where: { id: lp.userId } });
       if (!user) continue;
       await finalizePlayer({
@@ -372,12 +521,14 @@ export async function handleEndGame(io: Server, lobbyId: string, byUserId: strin
         initialBuyIn: lp.initialBuyIn,
         totalRebuys: lp.totalRebuys,
         cashOutStack: lp.chips,
+        placement: lp.placement ?? null,
       });
+      room.finalizedUsers.add(lp.userId);
     }
-    await closeGameSession(sessionId, room?.handsPlayed ?? 0);
+    await closeGameSession(sessionId, room.handsPlayed);
   }
   await prisma.lobby.update({ where: { id: lobbyId }, data: { status: 'FINISHED', finishedAt: new Date() } });
-  rooms.delete(lobbyId);
+  if (room) rooms.delete(lobbyId);
   io.to(lobbyId).emit('session:ended', { lobbyId, sessionId });
   await broadcastLobby(io, lobbyId);
 }
@@ -437,7 +588,7 @@ export async function broadcastLobby(io: Server, lobbyId: string) {
     startingStack: lobby.startingStack,
     smallBlind: lobby.smallBlind,
     bigBlind: lobby.bigBlind,
-    allowRebuy: lobby.allowRebuy,
+    allowRebuy: lobby.gameType === 'TOURNAMENT' ? false : lobby.allowRebuy,
     blindsIncrease: lobby.blindsIncrease,
     blindMultiplier: lobby.blindMultiplier,
     blindIntervalSec: lobby.blindIntervalSec,
@@ -453,6 +604,7 @@ export async function broadcastLobby(io: Server, lobbyId: string) {
       totalRebuys: p.totalRebuys,
       bustedOut: p.bustedOut,
       sittingOut: p.sittingOut,
+      placement: p.placement,
     })),
   });
 }

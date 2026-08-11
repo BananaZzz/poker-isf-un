@@ -28,25 +28,44 @@ export default async function Dashboard() {
     take: 20,
   });
 
-  // player-vs-player aggregation: for each participation, look at other participants
-  const oppMap = new Map<string, { username: string; games: number; net: number }>();
+  // player-vs-player aggregation from persisted HandTransfer rows
+  // net vs opp = (money moved TO me FROM opp)  -  (money moved FROM me TO opp)
+  const [inFlows, outFlows] = await Promise.all([
+    prisma.handTransfer.groupBy({
+      by: ['fromUserId'],
+      where: { toUserId: user.id },
+      _sum: { amountCents: true },
+    }),
+    prisma.handTransfer.groupBy({
+      by: ['toUserId'],
+      where: { fromUserId: user.id },
+      _sum: { amountCents: true },
+    }),
+  ]);
+  const netByOpp = new Map<string, number>();
+  for (const r of inFlows) netByOpp.set(r.fromUserId, (netByOpp.get(r.fromUserId) ?? 0) + (r._sum.amountCents ?? 0));
+  for (const r of outFlows) netByOpp.set(r.toUserId, (netByOpp.get(r.toUserId) ?? 0) - (r._sum.amountCents ?? 0));
+
+  const gamesByOpp = new Map<string, { username: string; games: number }>();
   for (const p of myParticipations) {
     for (const o of p.session.participants) {
       if (o.userId === user.id) continue;
-      const key = o.userId;
-      const cur = oppMap.get(key) ?? { username: o.username, games: 0, net: 0 };
+      const cur = gamesByOpp.get(o.userId) ?? { username: o.username, games: 0 };
       cur.games += 1;
-      // opponent's net vs my net (proxy attribution): "my result in this game" as reflection
-      // We attribute the delta between my net and opponent's net evenly across other players.
-      cur.username = o.username; // update to latest known name
-      cur.net += p.netResult - o.netResult; // signed: positive means I gained relative to them
-      oppMap.set(key, cur);
+      cur.username = o.username;
+      gamesByOpp.set(o.userId, cur);
     }
   }
-  const opponents = [...oppMap.entries()]
-    .map(([id, v]) => ({ id, ...v }))
+  const opponentIds = new Set<string>([...netByOpp.keys(), ...gamesByOpp.keys()]);
+  const opponents = [...opponentIds]
+    .map((id) => ({
+      id,
+      username: gamesByOpp.get(id)?.username ?? 'Unknown',
+      games: gamesByOpp.get(id)?.games ?? 0,
+      net: netByOpp.get(id) ?? 0,
+    }))
     .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
-    .slice(0, 6);
+    .slice(0, 8);
 
   return (
     <div className="grid gap-6 md:grid-cols-3">
@@ -149,7 +168,8 @@ export default async function Dashboard() {
             </table>
           )}
           <p className="text-[10px] text-ink-500 mt-2">
-            Net vs opponent = sum over shared games of (my net − their net). Deterministic proxy — see README.
+            Net vs opponent is computed from actual pot flows (each hand's contributions →
+            winners), attributed per-pot in proportion to award share. See README.
           </p>
         </div>
       </div>

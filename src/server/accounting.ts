@@ -13,6 +13,7 @@ export async function finalizePlayer(params: {
   initialBuyIn: number;
   totalRebuys: number;
   cashOutStack: number;
+  placement?: number | null;
 }) {
   const totalInvested = params.initialBuyIn + params.totalRebuys;
   const netResult = params.cashOutStack - totalInvested;
@@ -33,6 +34,7 @@ export async function finalizePlayer(params: {
         totalInvested,
         cashOutStack: params.cashOutStack,
         netResult,
+        placement: params.placement ?? null,
       },
     });
 

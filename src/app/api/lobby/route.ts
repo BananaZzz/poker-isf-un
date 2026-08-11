@@ -49,7 +49,7 @@ export async function POST(req: Request) {
       blindSpeed: parsed.data.blindSpeed,
       actionTimer: parsed.data.actionTimer,
       password: parsed.data.password || null,
-      allowRebuy: parsed.data.allowRebuy,
+      allowRebuy: parsed.data.gameType === 'TOURNAMENT' ? false : parsed.data.allowRebuy,
       blindsIncrease: parsed.data.blindsIncrease,
       blindMultiplier: parsed.data.blindsIncrease ? parsed.data.blindMultiplier ?? 1.5 : null,
       blindIntervalSec: parsed.data.blindsIncrease ? parsed.data.blindIntervalSec ?? 300 : null,

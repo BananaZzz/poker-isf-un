@@ -6,18 +6,27 @@ import { formatCurrency } from '@/lib/money';
 
 export const dynamic = 'force-dynamic';
 
-export default async function GameDetail({ params }: { params: { id: string } }) {
+export default async function GameDetail({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const user = await getSessionUser();
   if (!user) redirect('/login');
   const s = await prisma.gameSession.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: { participants: true, lobby: true },
   });
   if (!s) notFound();
   const isPart = s.participants.some((p) => p.userId === user.id);
   if (!isPart) return <div className="card-panel">You are not a participant of this game.</div>;
 
-  const sorted = s.participants.slice().sort((a, b) => b.netResult - a.netResult);
+  const isTournament = s.gameType === 'TOURNAMENT';
+  const sorted = s.participants.slice().sort((a, b) => {
+    if (isTournament) {
+      // placement 1 first; nulls go last
+      const ap = a.placement ?? 999, bp = b.placement ?? 999;
+      if (ap !== bp) return ap - bp;
+    }
+    return b.netResult - a.netResult;
+  });
   const duration = s.endedAt ? Math.round((+s.endedAt - +s.startedAt) / 60000) : null;
 
   return (
@@ -52,7 +61,7 @@ export default async function GameDetail({ params }: { params: { id: string } })
           <tbody>
             {sorted.map((p, i) => (
               <tr key={p.id} className="border-t border-ink-700">
-                <td className="py-2">{i + 1}</td>
+                <td className="py-2">{isTournament ? (p.placement ?? '—') : i + 1}</td>
                 <td className="py-2">{p.username}</td>
                 <td className="py-2 text-right">{formatCurrency(p.initialBuyIn)}</td>
                 <td className="py-2 text-right">{formatCurrency(p.totalRebuys)}</td>

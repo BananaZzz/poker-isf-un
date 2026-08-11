@@ -21,7 +21,7 @@ export async function createSession(userId: string) {
   const token = newToken();
   const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
   await prisma.session.create({ data: { token, userId, expiresAt } });
-  cookies().set(COOKIE, token, {
+  (await cookies()).set(COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
@@ -32,15 +32,16 @@ export async function createSession(userId: string) {
 }
 
 export async function destroySession() {
-  const token = cookies().get(COOKIE)?.value;
+  const store = await cookies();
+  const token = store.get(COOKIE)?.value;
   if (token) {
     await prisma.session.deleteMany({ where: { token } });
   }
-  cookies().delete(COOKIE);
+  store.delete(COOKIE);
 }
 
 export async function getSessionUser() {
-  const token = cookies().get(COOKIE)?.value;
+  const token = (await cookies()).get(COOKIE)?.value;
   if (!token) return null;
   const session = await prisma.session.findUnique({
     where: { token },

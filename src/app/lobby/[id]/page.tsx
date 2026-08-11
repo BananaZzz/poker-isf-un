@@ -5,11 +5,12 @@ import { LobbyRoom } from '@/components/LobbyRoom';
 
 export const dynamic = 'force-dynamic';
 
-export default async function LobbyPage({ params }: { params: { id: string } }) {
+export default async function LobbyPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const user = await getSessionUser();
   if (!user) redirect(`/login`);
   const lobby = await prisma.lobby.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: { players: { include: { user: true }, orderBy: { seat: 'asc' } } },
   });
   if (!lobby) notFound();

@@ -33,7 +33,7 @@ interface GameState {
   minRaise: number;
   pot: number;
   currentPlayerSeat: number | null;
-  showdown: { playerId: string; amount: number; handName: string }[] | null;
+  showdown: { playerId: string; amount: number; handName: string; potIndex?: number }[] | null;
   history: string[];
   actionDeadline: number | null;
 }
@@ -53,6 +53,10 @@ interface Meta {
   startingStack: number;
   gameType: 'CASH' | 'TOURNAMENT';
   lobbyId: string;
+  pacing?: {
+    showdownRevealPerPlayerMs?: number;
+    showdownExtraForBannerMs?: number;
+  };
 }
 
 function seatPos(seatIndex: number, total: number) {
@@ -107,22 +111,44 @@ export function PokerTable({
 
   const myTurn = me !== null && state.currentPlayerSeat === me.seat;
 
-  // Winner banner
-  const [banner, setBanner] = useState<{ title: string; sub: string } | null>(null);
-  const lastHandRef = useRef(state.handNumber);
+  // Winner banner — delayed until per-seat showdown reveals finish
+  const [banner, setBanner] = useState<{ lines: { title: string; sub: string }[] } | null>(null);
+  const shownHandRef = useRef<number>(-1);
   useEffect(() => {
-    if (state.showdown && state.showdown.length > 0) {
-      const first = state.showdown[0];
-      const p = state.players.find((x) => x.id === first.playerId);
-      const total = state.showdown.reduce((s, w) => s + w.amount, 0);
-      setBanner({
-        title: `${p?.username ?? 'Winner'} wins ${formatCurrency(total, { showSign: true })}`,
-        sub: state.showdown.map((w) => `${state.players.find((x) => x.id === w.playerId)?.username}: ${w.handName}`).join(' · '),
-      });
-      const t = setTimeout(() => setBanner(null), 3200);
-      return () => clearTimeout(t);
+    if (!state.showdown || state.showdown.length === 0) return;
+    if (shownHandRef.current === state.handNumber) return;
+    shownHandRef.current = state.handNumber;
+
+    // Count players whose cards are being revealed (excluding me)
+    const revealed = state.players.filter(
+      (p) => p.holeCards.length === 2 && p.id !== meId && p.status !== PlayerStatus.FOLDED
+    ).length;
+    const perPlayer = meta?.pacing?.showdownRevealPerPlayerMs ?? 700;
+    const extra = meta?.pacing?.showdownExtraForBannerMs ?? 400;
+    const revealDelay = revealed * perPlayer + extra;
+
+    // Group winners by potIndex so split/side pots show correctly
+    const grouped = new Map<number, { players: string[]; amount: number; handName: string }>();
+    for (const w of state.showdown) {
+      const key = w.potIndex ?? 0;
+      const p = state.players.find((x) => x.id === w.playerId);
+      const cur = grouped.get(key) ?? { players: [], amount: 0, handName: w.handName };
+      cur.players.push(p?.username ?? 'Winner');
+      cur.amount += w.amount;
+      cur.handName = w.handName;
+      grouped.set(key, cur);
     }
-  }, [state.handNumber, state.showdown]);
+    const lines = [...grouped.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([idx, v]) => ({
+        title: `${v.players.join(' & ')} wins ${formatCurrency(v.amount, { showSign: true })}${grouped.size > 1 ? (idx === 0 ? ' · main pot' : ` · side pot ${idx}`) : ''}`,
+        sub: v.handName,
+      }));
+
+    const showT = setTimeout(() => setBanner({ lines }), revealDelay);
+    const hideT = setTimeout(() => setBanner(null), revealDelay + 3200);
+    return () => { clearTimeout(showT); clearTimeout(hideT); };
+  }, [state.handNumber, state.showdown, state.players, meId, meta]);
 
   function send(type: ActionType, amount?: number) {
     getSocket().emit('game:action', { lobbyId, type, amount });
@@ -255,12 +281,16 @@ export function PokerTable({
         })}
       </div>
 
-      {/* Winner banner */}
+      {/* Winner banner (per pot, split-pot aware) */}
       {banner && (
         <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center pointer-events-none z-30">
-          <div className="rounded-2xl bg-black/70 border border-brass-500/70 backdrop-blur px-8 py-4 text-center shadow-2xl banner-in">
-            <div className="text-2xl font-display brass-text">{banner.title}</div>
-            <div className="text-sm text-white/70 mt-1">{banner.sub}</div>
+          <div className="rounded-2xl bg-black/70 border border-brass-500/70 backdrop-blur px-8 py-4 text-center shadow-2xl banner-in space-y-1">
+            {banner.lines.map((l, i) => (
+              <div key={i}>
+                <div className="text-2xl font-display brass-text">{l.title}</div>
+                <div className="text-sm text-white/70">{l.sub}</div>
+              </div>
+            ))}
           </div>
         </div>
       )}

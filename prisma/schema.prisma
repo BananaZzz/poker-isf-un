@@ -84,6 +84,9 @@ model LobbyPlayer {
   totalRebuys  Int  @default(0)      // cents
   bustedOut    Boolean @default(false)
   sittingOut   Boolean @default(false)
+  eliminatedAt DateTime?             // tournament: when this player was eliminated
+  eliminatedHand Int?                // tournament: hand number of elimination
+  placement    Int?                  // tournament: final placement (1 = winner)
   joinedAt DateTime @default(now())
 
   lobby Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
@@ -117,6 +120,26 @@ model GameSession {
 
   lobby        Lobby    @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
   participants GameParticipant[]
+  transfers    HandTransfer[]
+}
+
+// One row per attributed slice of a pot: money that moved from a loser to a winner
+// as part of a specific hand and pot index. Used for real pairwise accounting.
+model HandTransfer {
+  id          String @id @default(cuid())
+  sessionId   String
+  handNumber  Int
+  potIndex    Int
+  fromUserId  String
+  toUserId    String
+  amountCents Int
+  createdAt   DateTime @default(now())
+
+  session GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([fromUserId, toUserId])
+  @@index([toUserId, fromUserId])
 }
 
 model GameParticipant {
