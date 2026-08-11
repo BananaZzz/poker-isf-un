@@ -3,6 +3,8 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { getSessionUser } from '@/lib/auth';
 import { LogoutButton } from '@/components/LogoutButton';
+import { AvatarBadge } from '@/components/AvatarPicker';
+import { formatCurrency } from '@/lib/money';
 
 export const metadata: Metadata = {
   title: 'Golden Room Poker',
@@ -23,9 +25,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <nav className="flex items-center gap-3 text-sm">
               {user ? (
                 <>
-                  <Link href="/dashboard" className="text-white/80 hover:text-white">Dashboard</Link>
-                  <span className="text-brass-400">{user.username}</span>
-                  <span className="chip px-2 py-0.5 text-xs">{user.chips.toLocaleString()}</span>
+                  <Link href="/dashboard" className="text-white/80 hover:text-white flex items-center gap-2">
+                    <AvatarBadge id={user.avatar} url={user.avatarUrl ?? undefined} size={26} />
+                    <span>{user.username}</span>
+                  </Link>
+                  <span className={`text-xs ${user.netCents >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {formatCurrency(user.netCents, { showSign: true })}
+                  </span>
                   <LogoutButton />
                 </>
               ) : (

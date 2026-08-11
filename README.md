@@ -131,6 +131,43 @@ Server → Client events:
 The server enforces every rule: only whose turn it is may act; bets must
 respect min-raise and stack; timers auto-check/fold on expiry.
 
+## Currency, balances, and results
+
+All monetary values in the app are **integer minor units (cents)** — never
+floats. They render with a `€` prefix (e.g. `€20.00`) but are purely virtual
+play-money accounting units — there are no deposits, withdrawals, wallets,
+or real-money transactions of any kind anywhere in the code.
+
+Two concepts are kept strictly separate:
+
+- **Table stack (`LobbyPlayer.chips`)** — the amount currently in front of a
+  player at one specific poker table. Restored on rebuy.
+- **Lifetime performance (`User.netCents`)** — the running sum of every
+  session's `netResult`. May be negative. Never spent to enter a game; it's
+  a scoreboard, not a wallet.
+
+At session end, each participant is finalized once (idempotent per
+`sessionId × userId`): a `GameParticipant` row records `initialBuyIn`,
+`totalRebuys`, `totalInvested`, `cashOutStack`, and `netResult`. The user's
+lifetime counters (`netCents`, `gamesPlayed`, `gamesWon`,
+`totalWonCents`, `totalLostCents`, `biggestWinCents`, `biggestLossCents`)
+are updated atomically in the same transaction.
+
+Blind progression is server-authoritative and applies only **between hands**
+— never mid-hand. Rounding uses 5-cent cadence under €1 and 10-cent cadence
+at or above €1, with a monotonic-increase guard.
+
+## Rebuy / bust / leave
+
+- A cash-game player at €0 sees a **"You are out of chips"** panel with
+  **Rebuy**, **Sit out**, and **Leave table** options.
+- Busted players are excluded from the next hand; the remaining funded
+  players continue to play. If fewer than two funded players remain, the
+  table pauses in `WAITING` and resumes as soon as someone rebuys (or a
+  sit-out returns).
+- **Leave table** finalizes only that participant; the host can **End game**
+  to finalize everyone and close the session.
+
 ## Play-money notice
 
 There is **no real money** in this application. Chips are virtual and

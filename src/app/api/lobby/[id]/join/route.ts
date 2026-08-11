@@ -20,7 +20,13 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   let seat = 0;
   while (taken.has(seat)) seat++;
   await prisma.lobbyPlayer.create({
-    data: { lobbyId: lobby.id, userId: user.id, seat, chips: lobby.startingStack },
+    data: {
+      lobbyId: lobby.id,
+      userId: user.id,
+      seat,
+      chips: lobby.startingStack,
+      initialBuyIn: lobby.startingStack,
+    },
   });
   return NextResponse.json({ ok: true, lobbyId: lobby.id });
 }

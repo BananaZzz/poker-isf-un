@@ -8,12 +8,16 @@ const Schema = z.object({
   name: z.string().min(1).max(50),
   gameType: z.enum(['CASH', 'TOURNAMENT']),
   maxPlayers: z.number().int().min(2).max(10),
-  startingStack: z.number().int().min(100).max(1_000_000),
-  smallBlind: z.number().int().min(1).max(100_000),
-  bigBlind: z.number().int().min(2).max(200_000),
+  startingStack: z.number().int().min(50).max(10_000_000),
+  smallBlind: z.number().int().min(1).max(1_000_000),
+  bigBlind: z.number().int().min(2).max(2_000_000),
   blindSpeed: z.enum(['SLOW', 'NORMAL', 'TURBO']).default('NORMAL'),
   actionTimer: z.number().int().min(10).max(120),
   password: z.string().max(50).optional().nullable(),
+  allowRebuy: z.boolean().default(true),
+  blindsIncrease: z.boolean().default(false),
+  blindMultiplier: z.number().refine((v) => [1.5, 1.8, 2].includes(v)).optional().nullable(),
+  blindIntervalSec: z.number().int().refine((v) => [60, 120, 300, 600, 900, 1200].includes(v)).optional().nullable(),
 });
 
 export async function POST(req: Request) {
@@ -45,8 +49,17 @@ export async function POST(req: Request) {
       blindSpeed: parsed.data.blindSpeed,
       actionTimer: parsed.data.actionTimer,
       password: parsed.data.password || null,
+      allowRebuy: parsed.data.allowRebuy,
+      blindsIncrease: parsed.data.blindsIncrease,
+      blindMultiplier: parsed.data.blindsIncrease ? parsed.data.blindMultiplier ?? 1.5 : null,
+      blindIntervalSec: parsed.data.blindsIncrease ? parsed.data.blindIntervalSec ?? 300 : null,
       players: {
-        create: { userId: user.id, seat: 0, chips: parsed.data.startingStack },
+        create: {
+          userId: user.id,
+          seat: 0,
+          chips: parsed.data.startingStack,
+          initialBuyIn: parsed.data.startingStack,
+        },
       },
     },
   });

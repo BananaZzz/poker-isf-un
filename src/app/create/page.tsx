@@ -1,19 +1,42 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { formatCurrency, parseCurrencyToCents } from '@/lib/money';
+
+function CurrencyInput({ valueCents, onChange, className = '' }: { valueCents: number; onChange: (cents: number) => void; className?: string }) {
+  const [text, setText] = useState((valueCents / 100).toFixed(2));
+  return (
+    <input
+      className={`input ${className}`}
+      value={text}
+      inputMode="decimal"
+      onChange={(e) => {
+        const raw = e.target.value.replace(',', '.');
+        setText(raw);
+        const cents = parseCurrencyToCents(raw);
+        if (cents !== null) onChange(cents);
+      }}
+      onBlur={() => setText((valueCents / 100).toFixed(2))}
+    />
+  );
+}
 
 export default function CreatePage() {
   const router = useRouter();
   const [form, setForm] = useState({
-    name: 'Home Game',
+    name: 'Friday Poker',
     gameType: 'CASH' as 'CASH' | 'TOURNAMENT',
     maxPlayers: 6,
-    startingStack: 2000,
-    smallBlind: 10,
-    bigBlind: 20,
+    startingStack: 2000, // €20.00
+    smallBlind: 10,      // €0.10
+    bigBlind: 20,        // €0.20
     blindSpeed: 'NORMAL' as 'SLOW' | 'NORMAL' | 'TURBO',
     actionTimer: 30,
     password: '',
+    allowRebuy: true,
+    blindsIncrease: false,
+    blindMultiplier: 1.5,
+    blindIntervalSec: 300,
   });
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -26,7 +49,7 @@ export default function CreatePage() {
     e.preventDefault();
     setBusy(true);
     setErr(null);
-    const body = {
+    const body: any = {
       ...form,
       startingStack: Number(form.startingStack),
       smallBlind: Number(form.smallBlind),
@@ -35,8 +58,13 @@ export default function CreatePage() {
       actionTimer: Number(form.actionTimer),
       password: form.password || null,
     };
+    if (!form.blindsIncrease) {
+      body.blindMultiplier = null;
+      body.blindIntervalSec = null;
+    }
     const r = await fetch('/api/lobby', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     setBusy(false);
@@ -70,38 +98,63 @@ export default function CreatePage() {
         </div>
         <div className="grid grid-cols-3 gap-4">
           <label className="text-sm">
-            <div className="mb-1 text-white/80">Starting stack</div>
-            <input className="input" type="number" value={form.startingStack} onChange={(e) => up('startingStack', Number(e.target.value))} />
+            <div className="mb-1 text-white/80">Buy-in ({formatCurrency(form.startingStack)})</div>
+            <CurrencyInput valueCents={form.startingStack} onChange={(c) => up('startingStack', c)} />
           </label>
           <label className="text-sm">
-            <div className="mb-1 text-white/80">Small blind</div>
-            <input className="input" type="number" value={form.smallBlind} onChange={(e) => up('smallBlind', Number(e.target.value))} />
+            <div className="mb-1 text-white/80">Small blind ({formatCurrency(form.smallBlind)})</div>
+            <CurrencyInput valueCents={form.smallBlind} onChange={(c) => up('smallBlind', c)} />
           </label>
           <label className="text-sm">
-            <div className="mb-1 text-white/80">Big blind</div>
-            <input className="input" type="number" value={form.bigBlind} onChange={(e) => up('bigBlind', Number(e.target.value))} />
+            <div className="mb-1 text-white/80">Big blind ({formatCurrency(form.bigBlind)})</div>
+            <CurrencyInput valueCents={form.bigBlind} onChange={(c) => up('bigBlind', c)} />
           </label>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <label className="text-sm">
-            <div className="mb-1 text-white/80">Blind speed (tournament)</div>
-            <select className="input" value={form.blindSpeed} onChange={(e) => up('blindSpeed', e.target.value as any)}>
-              <option value="SLOW">Slow (10 min)</option>
-              <option value="NORMAL">Normal (5 min)</option>
-              <option value="TURBO">Turbo (2 min)</option>
-            </select>
+          <label className="text-sm flex items-center gap-2">
+            <input type="checkbox" checked={form.allowRebuy} onChange={(e) => up('allowRebuy', e.target.checked)} />
+            <span>Allow rebuy (cash game)</span>
           </label>
+          <label className="text-sm flex items-center gap-2">
+            <input type="checkbox" checked={form.blindsIncrease} onChange={(e) => up('blindsIncrease', e.target.checked)} />
+            <span>Increase blinds automatically</span>
+          </label>
+        </div>
+        {form.blindsIncrease && (
+          <div className="grid grid-cols-2 gap-4">
+            <label className="text-sm">
+              <div className="mb-1 text-white/80">Multiplier</div>
+              <select className="input" value={form.blindMultiplier} onChange={(e) => up('blindMultiplier', Number(e.target.value))}>
+                <option value={1.5}>1.5×</option>
+                <option value={1.8}>1.8×</option>
+                <option value={2}>2×</option>
+              </select>
+            </label>
+            <label className="text-sm">
+              <div className="mb-1 text-white/80">Interval</div>
+              <select className="input" value={form.blindIntervalSec} onChange={(e) => up('blindIntervalSec', Number(e.target.value))}>
+                <option value={60}>1 minute</option>
+                <option value={120}>2 minutes</option>
+                <option value={300}>5 minutes</option>
+                <option value={600}>10 minutes</option>
+                <option value={900}>15 minutes</option>
+                <option value={1200}>20 minutes</option>
+              </select>
+            </label>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-4">
           <label className="text-sm">
             <div className="mb-1 text-white/80">Action timer (seconds)</div>
             <select className="input" value={form.actionTimer} onChange={(e) => up('actionTimer', Number(e.target.value))}>
               {[15, 30, 45, 60].map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </label>
+          <label className="text-sm">
+            <div className="mb-1 text-white/80">Password (optional)</div>
+            <input className="input" value={form.password} onChange={(e) => up('password', e.target.value)} />
+          </label>
         </div>
-        <label className="text-sm">
-          <div className="mb-1 text-white/80">Password (optional)</div>
-          <input className="input" value={form.password} onChange={(e) => up('password', e.target.value)} />
-        </label>
         {err && <div className="text-red-400 text-sm">{err}</div>}
         <button className="btn btn-primary" disabled={busy}>{busy ? '…' : 'Create lobby'}</button>
       </form>

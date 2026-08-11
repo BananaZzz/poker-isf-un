@@ -29,13 +29,22 @@ export default async function LobbyPage({ params }: { params: { id: string } }) 
         startingStack: lobby.startingStack,
         smallBlind: lobby.smallBlind,
         bigBlind: lobby.bigBlind,
+        allowRebuy: lobby.allowRebuy,
+        blindsIncrease: lobby.blindsIncrease,
+        blindMultiplier: lobby.blindMultiplier,
+        blindIntervalSec: lobby.blindIntervalSec,
         players: lobby.players.map((p) => ({
           userId: p.userId,
           username: p.user.username,
           avatar: p.user.avatar,
+          avatarUrl: p.user.avatarUrl,
           seat: p.seat,
           ready: p.ready,
           chips: p.chips,
+          initialBuyIn: p.initialBuyIn,
+          totalRebuys: p.totalRebuys,
+          bustedOut: p.bustedOut,
+          sittingOut: p.sittingOut,
         })),
       }}
     />

@@ -2,8 +2,20 @@
 import { AVATARS } from '@/lib/avatars';
 import clsx from 'clsx';
 
-export function AvatarBadge({ id, size = 40 }: { id: string; size?: number }) {
+export function AvatarBadge({ id, size = 40, url }: { id: string; size?: number; url?: string | null }) {
   const a = AVATARS.find((x) => x.id === id) ?? AVATARS[0];
+  if (url) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={url}
+        alt=""
+        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+        className="rounded-full object-cover border border-black/40"
+        style={{ width: size, height: size }}
+      />
+    );
+  }
   return (
     <div
       className="rounded-full flex items-center justify-center font-semibold border border-black/40"

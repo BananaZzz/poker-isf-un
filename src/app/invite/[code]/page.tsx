@@ -23,7 +23,13 @@ export default async function InvitePage({ params }: { params: { code: string } 
       let seat = 0;
       while (takenSet.has(seat)) seat++;
       await prisma.lobbyPlayer.create({
-        data: { lobbyId: lobby.id, userId: user.id, seat, chips: lobby.startingStack },
+        data: {
+          lobbyId: lobby.id,
+          userId: user.id,
+          seat,
+          chips: lobby.startingStack,
+          initialBuyIn: lobby.startingStack,
+        },
       });
     }
   }

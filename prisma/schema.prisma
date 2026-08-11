@@ -8,20 +8,28 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  username     String   @unique
-  passwordHash String
-  avatar       String   @default("avatar-1")
-  chips        Int      @default(10000)
-  gamesPlayed  Int      @default(0)
-  wins         Int      @default(0)
-  tourneyWins  Int      @default(0)
-  createdAt    DateTime @default(now())
+  id             String   @id @default(cuid())
+  username       String   @unique
+  passwordHash   String
+  avatar         String   @default("avatar-1")
+  avatarUrl      String?  // uploaded image path (relative to /uploads), or null
+  chips          Int      @default(0)   // deprecated: kept for backwards-compat; not used for balance
+  netCents       Int      @default(0)   // lifetime cumulative net poker result, integer cents (may be negative)
+  gamesPlayed    Int      @default(0)
+  handsPlayed    Int      @default(0)
+  gamesWon       Int      @default(0)
+  totalWonCents  Int      @default(0)
+  totalLostCents Int      @default(0)
+  biggestWinCents  Int    @default(0)
+  biggestLossCents Int    @default(0)
+  tourneyWins    Int      @default(0)
+  createdAt      DateTime @default(now())
 
-  sessions   Session[]
-  lobbies    Lobby[]        @relation("HostLobbies")
-  seats      LobbyPlayer[]
-  invitesOut Invite[]       @relation("InvitesFrom")
+  sessions        Session[]
+  lobbies         Lobby[]        @relation("HostLobbies")
+  seats           LobbyPlayer[]
+  invitesOut      Invite[]       @relation("InvitesFrom")
+  participations  GameParticipant[]
 }
 
 model Session {
@@ -40,18 +48,29 @@ model Lobby {
   inviteCode    String   @unique
   gameType      String   // "CASH" | "TOURNAMENT"
   maxPlayers    Int      @default(6)
-  startingStack Int      @default(2000)
-  smallBlind    Int      @default(10)
-  bigBlind      Int      @default(20)
-  blindSpeed    String   @default("NORMAL") // SLOW | NORMAL | TURBO
+  startingStack Int      @default(2000)   // cents
+  smallBlind    Int      @default(10)     // cents
+  bigBlind      Int      @default(20)     // cents
+  blindSpeed    String   @default("NORMAL")
   actionTimer   Int      @default(30)
   password      String?
   status        String   @default("WAITING") // WAITING | RUNNING | FINISHED
+
+  // Rebuy
+  allowRebuy    Boolean  @default(true)
+
+  // Blind progression
+  blindsIncrease  Boolean @default(false)
+  blindMultiplier Float?  // e.g. 1.5, 1.8, 2.0
+  blindIntervalSec Int?   // seconds between level increases
+
   createdAt     DateTime @default(now())
+  finishedAt    DateTime?
 
   host    User          @relation("HostLobbies", fields: [hostId], references: [id], onDelete: Cascade)
   players LobbyPlayer[]
   invites Invite[]
+  sessions GameSession[]
 }
 
 model LobbyPlayer {
@@ -60,7 +79,11 @@ model LobbyPlayer {
   userId   String
   seat     Int
   ready    Boolean @default(false)
-  chips    Int
+  chips    Int                       // current table stack (cents)
+  initialBuyIn Int  @default(0)      // cents
+  totalRebuys  Int  @default(0)      // cents
+  bustedOut    Boolean @default(false)
+  sittingOut   Boolean @default(false)
   joinedAt DateTime @default(now())
 
   lobby Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
@@ -79,4 +102,37 @@ model Invite {
 
   lobby   Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
   creator User  @relation("InvitesFrom", fields: [createdBy], references: [id], onDelete: Cascade)
+}
+
+model GameSession {
+  id           String   @id @default(cuid())
+  lobbyId      String
+  name         String
+  gameType     String
+  startedAt    DateTime @default(now())
+  endedAt      DateTime?
+  handsPlayed  Int      @default(0)
+  smallBlindStart Int   @default(0)
+  bigBlindStart   Int   @default(0)
+
+  lobby        Lobby    @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
+  participants GameParticipant[]
+}
+
+model GameParticipant {
+  id           String   @id @default(cuid())
+  sessionId    String
+  userId       String
+  username     String   // snapshotted at end
+  initialBuyIn Int      // cents
+  totalRebuys  Int
+  totalInvested Int     // = initialBuyIn + totalRebuys
+  cashOutStack Int      // cents at cashout/end
+  netResult    Int      // cashOutStack - totalInvested
+  placement    Int?     // 1..N, for tournament or ordered by netResult in cash
+
+  session      GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId])
 }

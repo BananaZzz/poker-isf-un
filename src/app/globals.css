@@ -65,3 +65,18 @@ html, body {
 .card-panel {
   @apply rounded-xl bg-ink-900/80 border border-ink-700 p-5 backdrop-blur;
 }
+
+@keyframes cardDealIn {
+  from { transform: translateY(-14px) scale(.85) rotate(-3deg); opacity: 0; }
+  to   { transform: translateY(0)     scale(1)   rotate(0);      opacity: 1; }
+}
+.card-appear {
+  animation: cardDealIn 320ms cubic-bezier(.2,.9,.3,1) both;
+}
+@keyframes bannerIn {
+  from { transform: translateY(8px) scale(.96); opacity: 0; }
+  to   { transform: translateY(0)   scale(1);   opacity: 1; }
+}
+.banner-in { animation: bannerIn 260ms ease-out both; }
+
+.chip-glow { box-shadow: 0 0 22px rgba(212,175,81,.35); }

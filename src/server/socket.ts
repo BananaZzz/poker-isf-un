@@ -1,11 +1,14 @@
 import type { Server, Socket } from 'socket.io';
 import { getUserByToken, SESSION_COOKIE_NAME } from '@/lib/auth';
 import {
-  ensureRoom,
   joinRoom,
   leaveRoom,
   startGame,
   handlePlayerAction,
+  handleRebuy,
+  handleSitOut,
+  handleLeaveTable,
+  handleEndGame,
   toggleReady,
   broadcastLobby,
   chat,
@@ -72,14 +75,32 @@ export function attachSocketServer(io: Server) {
 
     socket.on('game:join', async ({ lobbyId }: { lobbyId: string }) => {
       try {
-        // ensure user is a member
         const lp = await prisma.lobbyPlayer.findFirst({ where: { lobbyId, userId } });
         if (!lp) return socket.emit('error:msg', 'not in lobby');
-        await ensureRoom(lobbyId);
         joinRoom(io, socket, lobbyId);
       } catch (e) {
         socket.emit('error:msg', (e as Error).message);
       }
+    });
+
+    socket.on('game:rebuy', async ({ lobbyId }: { lobbyId: string }) => {
+      try { await handleRebuy(io, lobbyId, userId); await broadcastLobby(io, lobbyId); }
+      catch (e) { socket.emit('error:msg', (e as Error).message); }
+    });
+
+    socket.on('game:sitout', async ({ lobbyId, sitOut }: { lobbyId: string; sitOut: boolean }) => {
+      try { await handleSitOut(io, lobbyId, userId, Boolean(sitOut)); await broadcastLobby(io, lobbyId); }
+      catch (e) { socket.emit('error:msg', (e as Error).message); }
+    });
+
+    socket.on('game:leaveTable', async ({ lobbyId }: { lobbyId: string }) => {
+      try { await handleLeaveTable(io, lobbyId, userId); }
+      catch (e) { socket.emit('error:msg', (e as Error).message); }
+    });
+
+    socket.on('game:end', async ({ lobbyId }: { lobbyId: string }) => {
+      try { await handleEndGame(io, lobbyId, userId); }
+      catch (e) { socket.emit('error:msg', (e as Error).message); }
     });
 
     socket.on('game:leave', ({ lobbyId }: { lobbyId: string }) => {
